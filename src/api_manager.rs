@@ -1,27 +1,28 @@
-mod login;
 mod models;
-mod ping;
+mod routes;
 
-use rocket::get;
-use rocket::launch;
-use rocket::routes;
+use nickel::{middleware, HttpRouter, Nickel};
 
-#[get("/")]
-fn index() -> &'static str {
-    "Hello, world!"
+pub struct ApiManager {
+    pub server: Nickel,
 }
 
-#[launch]
-pub fn rocket() -> _ {
-    rocket::build()
-        // .register("/", rocket::catchers![not_found])
-        .mount("/api", routes![index, ping::register, login::register])
-}
+impl ApiManager {
+    pub async fn new() -> Self {
+        let mut manager = Self {
+            server: Nickel::new(),
+        };
+        manager.setup_routes();
+        return manager;
+    }
 
-/*
-#[rocket::catch(404)]
-fn not_found() -> &'static str {
-    println!("Request received 404");
-    "404 Not Found"
+    fn setup_routes(&mut self) {
+        self.server
+            .get("/api/ping", middleware!(routes::ping::handler()));
+
+        self.server.post(
+            "/api/login",
+            middleware!(|request, mut response| routes::login::handler(request, &mut response)),
+        );
+    }
 }
-*/
