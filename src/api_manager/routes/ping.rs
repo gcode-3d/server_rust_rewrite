@@ -1,7 +1,6 @@
 use hyper::{header, Body, Request, Response};
 
 pub fn handler(_request: Request<Body>) -> Response<Body> {
-    // println!("{:?}", request.headers());
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")

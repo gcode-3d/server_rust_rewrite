@@ -1,7 +1,10 @@
-use hyper::{header, Body, Request, Response, StatusCode};
+use hyper::{header, Body, Request, Response};
 use sqlx::{Connection, SqliteConnection};
 
-use crate::api_manager::models::{AuthPermissions, SettingRow};
+use crate::api_manager::{
+    models::{AuthPermissions, SettingRow},
+    responses::{server_error_response, unauthorized_response},
+};
 
 pub async fn handler(req: Request<Body>) -> Response<Body> {
     if !req.headers().contains_key("authorization") {
@@ -61,26 +64,4 @@ pub async fn handler(req: Request<Body>) -> Response<Body> {
             json.chars().skip(1).collect::<String>()
         )))
         .expect("Failed to construct valid response");
-}
-
-fn unauthorized_response() -> Response<Body> {
-    return Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
-        .status(StatusCode::UNAUTHORIZED)
-        .body(Body::from("Unauthorized"))
-        .expect("Failed to construct valid repsonse");
-}
-
-fn server_error_response() -> Response<Body> {
-    return Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from("Internal Server Error"))
-        .expect("Failed to construct valid repsonse");
 }

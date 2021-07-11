@@ -9,7 +9,10 @@ use sqlx::{Connection, Executor, SqliteConnection};
 
 use bcrypt::verify;
 
-use crate::api_manager::models::AuthDetails;
+use crate::api_manager::{
+    models::AuthDetails,
+    responses::{bad_request_response, server_error_response, unauthorized_response},
+};
 
 pub async fn handler(mut request: Request<Body>) -> Response<Body> {
     if !request.headers().contains_key(header::CONTENT_TYPE) {
@@ -53,7 +56,7 @@ pub async fn handler(mut request: Request<Body>) -> Response<Body> {
                 }
                 Err(e) => {
                     eprintln!("hash verify error: {}", e);
-                    return internal_server_error_response();
+                    return server_error_response();
                 }
             },
             Err(e) => match e {
@@ -62,7 +65,7 @@ pub async fn handler(mut request: Request<Body>) -> Response<Body> {
                 }
                 _ => {
                     eprintln!("sql error: {}", e);
-                    return internal_server_error_response();
+                    return server_error_response();
                 }
             },
         }
@@ -105,33 +108,4 @@ async fn generate_token_for_user(username: &str, does_expire: bool) -> String {
     };
     connection.execute(query).await.unwrap();
     return token;
-}
-
-fn bad_request_response() -> Response<Body> {
-    return Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
-        .status(StatusCode::BAD_REQUEST)
-        .body(Body::from("Bad Request"))
-        .expect("Failed to construct response");
-}
-
-fn internal_server_error_response() -> Response<Body> {
-    return Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from("Internal Server Error"))
-        .expect("Failed to construct response");
-}
-
-fn unauthorized_response() -> Response<Body> {
-    return Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
-        .body(Body::from("Unauthorized"))
-        .expect("Failed to construct response");
 }

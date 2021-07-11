@@ -1,21 +1,25 @@
 pub mod models;
+pub mod responses;
+
 mod routes;
 
 use crate::api_manager::{
     models::{BridgeEvents, EventType},
-    routes::{listSettings, login},
+    responses::{not_found_response, unauthorized_response},
+    routes::{list_files, list_settings, login},
 };
 
 use self::{
     models::{AuthPermissions, EventInfo},
+    responses::bad_request_response,
     routes::ping,
 };
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use hyper::{
-    header::{self, CONTENT_TYPE},
+    header::{self},
     upgrade::Upgraded,
-    Error, StatusCode,
+    Error,
 };
 
 use hyper::{
@@ -298,31 +302,14 @@ async fn handle_route(request: Request<Body>, distributor: Sender<EventInfo>) ->
         println!("Matched first fallback, no /api");
         return not_found_response();
     }
+
     if request.method() == Method::OPTIONS {
-        println!("Options call, {}", request.uri().path());
-        if request.uri().path() == "/api/login" {
-            return Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response");
-        }
-        if request.uri().path() == "/api/ping" {
-            return Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response");
-        }
-        if request.uri().path() == "/api/settings" {
-            return Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response");
+        let result = handle_option_requests(&request);
+        if result.is_some() {
+            return result.unwrap();
         }
     }
+
     // First do exact matches
     if request.method() == Method::GET && request.uri().path().eq("/api/ping") {
         let _ = distributor.send(EventInfo {
@@ -338,31 +325,55 @@ async fn handle_route(request: Request<Body>, distributor: Sender<EventInfo>) ->
         return login::handler(request).await;
     }
     if request.method().eq(&Method::GET) && request.uri().path().eq("/api/settings") {
-        return listSettings::handler(request).await;
+        return list_settings::handler(request).await;
+    }
+    if request.method().eq(&Method::GET) && request.uri().path().eq("/api/files") {
+        return list_files::handler(request).await;
     }
     return not_found_response();
 }
 
-fn not_found_response() -> Response<Body> {
-    return Response::builder()
-        .header(CONTENT_TYPE, "text/plain")
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not Found"))
-        .expect("Failed to construct a valid response");
-}
-
-fn bad_request_response() -> Response<Body> {
-    return Response::builder()
-        .header(CONTENT_TYPE, "text/plain")
-        .status(StatusCode::BAD_REQUEST)
-        .body(Body::from("Bad Request"))
-        .expect("Failed to construct a valid response");
-}
-
-fn unauthorized_response() -> Response<Body> {
-    return Response::builder()
-        .header(CONTENT_TYPE, "text/plain")
-        .status(StatusCode::UNAUTHORIZED)
-        .body(Body::from("Bad Request"))
-        .expect("Failed to construct a valid response");
+fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
+    if request.uri().path() == "/api/login" {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+    if request.uri().path() == "/api/ping" {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET")
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+    if request.uri().path() == "/api/settings" {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization")
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+    if request.uri().path() == "/api/files" {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, PUT")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_HEADERS,
+                    "X-Requested-With,content-type, Authorization, X-force-upload",
+                )
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+    return None;
 }
