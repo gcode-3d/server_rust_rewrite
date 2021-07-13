@@ -6,7 +6,7 @@ use crate::{
         self,
         models::{
             BridgeEvents, EventInfo,
-            EventType::{self, Websocket},
+            EventType::{self},
             WebsocketEvents,
         },
     },

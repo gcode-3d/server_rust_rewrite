@@ -20,7 +20,7 @@ pub fn unauthorized_response() -> Response<Body> {
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")
         .status(StatusCode::UNAUTHORIZED)
-        .body(Body::from("Bad Request"))
+        .body(Body::from("Unauthorized"))
         .expect("Failed to construct a valid response");
 }
 
@@ -29,5 +29,21 @@ pub fn server_error_response() -> Response<Body> {
         .header(header::CONTENT_TYPE, "text/plain")
         .status(StatusCode::INTERNAL_SERVER_ERROR)
         .body(Body::from("Internal Server Error"))
+        .expect("Failed to construct a valid response");
+}
+
+pub fn forbidden_response() -> Response<Body> {
+    return Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain")
+        .status(StatusCode::FORBIDDEN)
+        .body(Body::from("Forbidden"))
+        .expect("Failed to construct a valid response");
+}
+
+pub fn too_large_response() -> Response<Body> {
+    return Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain")
+        .status(StatusCode::PAYLOAD_TOO_LARGE)
+        .body(Body::from("Payload too large"))
         .expect("Failed to construct a valid response");
 }

@@ -6,7 +6,6 @@ mod routes;
 use crate::api_manager::{
     models::{BridgeEvents, EventType},
     responses::{not_found_response, unauthorized_response},
-    routes::{list_files, list_settings, login},
 };
 
 use self::{
@@ -17,7 +16,7 @@ use self::{
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use hyper::{
-    header::{self},
+    header::{self, HeaderValue},
     upgrade::Upgraded,
     Error,
 };
@@ -76,13 +75,14 @@ async fn basic_handler(
             return Ok(unauthorized_response());
         }
 
-        let token = req
-            .headers()
-            .get("sec-websocket-protocol")
-            .unwrap()
-            .to_str()
-            .unwrap();
-
+        let token = String::from(
+            req.headers()
+                .clone()
+                .get("sec-websocket-protocol")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
         if token.contains(" ")
             || token.contains(",")
             || token.len() != 60
@@ -97,7 +97,7 @@ async fn basic_handler(
                 "select a.username as username, a.permissions as permissions from users a inner join tokens b on a.username = b.username where (b.expire < DATE('now') OR b.expire is null) AND b.token = ?",
             );
 
-            query = query.bind(token);
+            query = query.bind(&token);
 
             match query.fetch_optional(&mut connection).await {
                 Ok(value) => {
@@ -121,7 +121,7 @@ async fn basic_handler(
         let user = result.unwrap();
 
         match hyper_tungstenite::upgrade(req, None) {
-            Ok((response, websocket)) => {
+            Ok((mut response, websocket)) => {
                 spawn(async move {
                     if let Err(e) = websocket_handler(
                         websocket.await.expect("[WS] Handshake failure"),
@@ -133,7 +133,10 @@ async fn basic_handler(
                         eprintln!("Error websocket: {}", e);
                     }
                 });
-
+                response.headers_mut().append(
+                    header::SEC_WEBSOCKET_PROTOCOL,
+                    HeaderValue::from_str(&token).unwrap(),
+                );
                 return Ok(response);
             }
             Err(e) => {
@@ -268,7 +271,7 @@ async fn websocket_handler(
                     "content": {
                         "user":
                         {
-                            "username":"Tobias",
+                            "username": user.username(),
                             "permissions" : {
                                  "admin": user.admin() ,
                                  "connection.edit": user.edit_connection(),
@@ -295,7 +298,10 @@ async fn websocket_handler(
     return Ok(());
 }
 
-async fn handle_route(request: Request<Body>, distributor: Sender<EventInfo>) -> Response<Body> {
+async fn handle_route(
+    mut request: Request<Body>,
+    distributor: Sender<EventInfo>,
+) -> Response<Body> {
     println!("[API] Request url: {}", request.uri());
 
     if !request.uri().path().starts_with("/api") {
@@ -322,13 +328,16 @@ async fn handle_route(request: Request<Body>, distributor: Sender<EventInfo>) ->
         return ping::handler(request);
     }
     if request.method().eq(&Method::POST) && request.uri().path().eq("/api/login") {
-        return login::handler(request).await;
+        return routes::login::handler(request).await;
     }
     if request.method().eq(&Method::GET) && request.uri().path().eq("/api/settings") {
-        return list_settings::handler(request).await;
+        return routes::list_settings::handler(request).await;
     }
     if request.method().eq(&Method::GET) && request.uri().path().eq("/api/files") {
-        return list_files::handler(request).await;
+        return routes::list_files::handler(request).await;
+    }
+    if request.method().eq(&Method::PUT) && request.uri().path().eq("/api/files") {
+        return routes::upload_file::handler(&mut request).await;
     }
     return not_found_response();
 }
