@@ -4,7 +4,7 @@ pub mod responses;
 mod routes;
 
 use crate::api_manager::{
-    models::{BridgeEvents, EventType},
+    models::{BridgeEvents, EventType, State},
     responses::{not_found_response, unauthorized_response},
 };
 
@@ -14,6 +14,7 @@ use self::{
     routes::ping,
 };
 
+use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use hyper::{
     header::{self, HeaderValue},
@@ -35,7 +36,7 @@ use hyper::{Body, Request, Response, Server};
 use hyper_tungstenite::tungstenite::Message;
 use serde_json::json;
 use sqlx::{Connection, SqliteConnection};
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, ops::Deref, sync::Arc};
 use tokio::{spawn, sync::Mutex};
 pub struct ApiManager {}
 
@@ -47,11 +48,13 @@ impl ApiManager {
         let make_svc = make_service_fn(move |_| {
             let distributor = distributor.clone();
             let receiver = websocket_receiver.clone();
+            let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::Disconnected));
             async move {
                 Ok::<_, Error>(service_fn(move |req| {
+                    let curr_state = state.clone();
                     let dist_clone = distributor.clone();
                     let rcvr_clone = receiver.clone();
-                    async move { basic_handler(req, dist_clone, rcvr_clone).await }
+                    async move { basic_handler(req, dist_clone, rcvr_clone, curr_state).await }
                 }))
             }
         });
@@ -68,6 +71,7 @@ async fn basic_handler(
     req: Request<Body>,
     distributor: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
+    state: Arc<Mutex<State>>,
 ) -> Result<Response<Body>, Infallible> {
     if hyper_tungstenite::is_upgrade_request(&req) && req.uri().path().eq("/ws") {
         println!("starting ws upgrade");
@@ -127,6 +131,7 @@ async fn basic_handler(
                         websocket.await.expect("[WS] Handshake failure"),
                         user,
                         receiver,
+                        state,
                     )
                     .await
                     {
@@ -157,19 +162,40 @@ async fn websocket_handler(
     websocket: WebSocketStream<Upgraded>,
     user: AuthPermissions,
     receiver: Receiver<EventInfo>,
+    state: Arc<Mutex<State>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (outgoing, mut incoming) = websocket.split();
     let outgoing = Arc::new(Mutex::new(outgoing));
     println!("{:?}", user);
     let (local_sender, local_receiver) = unbounded::<String>();
+    let current_state = state.clone();
     spawn(async move {
         while let Some(event) = receiver.iter().next() {
-            println!("[API] new event: {:?}", event);
             match event.event_type {
-                models::EventType::Websocket(models::WebsocketEvents::TerminalSend { message }) => {
+                models::EventType::Websocket(models::WebsocketEvents::TerminalSend {
+                    message: _,
+                }) => {
                     todo!("Not yet impl. terminal send");
                 }
+
+                models::EventType::Websocket(models::WebsocketEvents::TerminalRead { message }) => {
+                    let time: DateTime<Utc> = Utc::now();
+                    let json = json!({
+                        "type": "terminal_message",
+                        "content": [
+                            {
+                                "message": message,
+                                "type": "OUTPUT",
+                                "id": null,
+                                "time": time.to_rfc3339()
+                            }
+                        ]
+                    });
+                    let _ = local_sender.send(json.to_string());
+                }
+
                 models::EventType::Websocket(models::WebsocketEvents::StateUpdate { state }) => {
+                    *current_state.lock().await = state.clone();
                     let json = match state {
                         models::State::Disconnected => json!({
                             "type": "state_update",
@@ -206,9 +232,8 @@ async fn websocket_handler(
                     };
                     let _ = local_sender.send(json);
                 }
-                _ => {
-                    todo!("Unknown event type");
-                }
+                EventType::Bridge(_) => todo!(),
+                EventType::Websocket(_) => todo!(),
             }
         }
     });
@@ -262,39 +287,55 @@ async fn websocket_handler(
                 .await;
         }
     });
-    let _ = outgoing
-        .lock()
-        .await
-        .send(Message::text(
-            json!({
-                    "type":"ready",
-                    "content": {
-                        "user":
-                        {
-                            "username": user.username(),
-                            "permissions" : {
-                                 "admin": user.admin() ,
-                                 "connection.edit": user.edit_connection(),
-                                 "file.access": user.file_access(),
-                                 "file.edit": user.file_edit(),
-                                 "print_state.edit": user.print_state_edit(),
-                                 "settings.edit": user.settings_edit(),
-                                 "permissions.edit": user.users_edit(),
-                                 "terminal.read": user.terminal_read(),
-                                 "terminal.send": user.terminal_send(),
-                                 "webcam.view": user.webcam(),
-                                 "update.check": user.update(),
-                                 "update.manage": user.update()
-                                }
-                            },
-                        "state" : "Errored",
-                        "description":{"errorDescription":"No device connected on selected path."
+    let mut json = json!({
+            "type":"ready",
+            "content": {
+                "user":
+                {
+                    "username": user.username(),
+                    "permissions" : {
+                         "admin": user.admin() ,
+                         "connection.edit": user.edit_connection(),
+                         "file.access": user.file_access(),
+                         "file.edit": user.file_edit(),
+                         "print_state.edit": user.print_state_edit(),
+                         "settings.edit": user.settings_edit(),
+                         "permissions.edit": user.users_edit(),
+                         "terminal.read": user.terminal_read(),
+                         "terminal.send": user.terminal_send(),
+                         "webcam.view": user.webcam(),
+                         "update.check": user.update(),
+                         "update.manage": user.update()
                         }
                     }
-            })
-            .to_string(),
-        ))
-        .await;
+            }
+    })
+    .to_string();
+    json.chars().next_back();
+    json.chars().next_back();
+
+    match state.lock().await.deref() {
+        State::Disconnected => {
+            json = format!("{}, {{\"state\": \"Disconnected\"}}}}}}", json);
+        }
+        State::Connecting => {
+            json = format!("{}, {{\"state\": \"Connecting\"}}}}}}", json);
+        }
+        State::Connected => {
+            json = format!("{}, {{\"state\": \"Connected\"}}}}}}", json);
+        }
+        State::Errored { description } => {
+            json = format!(
+                "{}, {}}}}}",
+                json,
+                json!({
+                    "state": "errored",
+                    "description": description
+                })
+            )
+        }
+    };
+    let _ = outgoing.lock().await.send(Message::text(json)).await;
     return Ok(());
 }
 

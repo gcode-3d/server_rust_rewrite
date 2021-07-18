@@ -218,17 +218,18 @@ pub enum EventType {
 #[derive(Clone, Debug)]
 pub enum WebsocketEvents {
     TerminalSend { message: String },
+    TerminalRead { message: String },
     StateUpdate { state: State },
 }
 
 #[derive(Clone, Debug)]
 pub enum BridgeEvents {
     ConnectionCreate { address: String, port: u32 },
-    ConnectionCreateError { error: u8 },
-    Ping,
+    ConnectionCreateError { error: String },
+    TerminalRead { message: String },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum State {
     Disconnected,
     Connecting,

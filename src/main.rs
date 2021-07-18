@@ -1,5 +1,5 @@
 use crate::api_manager::models::{EventInfo, EventType, WebsocketEvents};
-use api_manager::ApiManager;
+use api_manager::{models::State, ApiManager};
 
 use bridge::Bridge;
 use crossbeam_channel::unbounded;
@@ -11,7 +11,6 @@ use tokio::{
 };
 mod api_manager;
 mod bridge;
-mod connection_manager;
 
 #[tokio::main]
 async fn main() {
@@ -30,7 +29,6 @@ async fn main() {
 struct Manager {
     bridge_thread: Option<JoinHandle<()>>,
     api_thread: Option<JoinHandle<()>>,
-    websocket_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Manager {
@@ -38,7 +36,6 @@ impl Manager {
         Self {
             bridge_thread: None,
             api_thread: None,
-            websocket_thread: None,
         }
     }
 
@@ -69,7 +66,7 @@ impl Manager {
                     let dist_sender_clone = dist_sender.clone();
                     let bridge_receiver_clone = bridge_receiver.clone();
                     self.bridge_thread = Some(spawn_blocking(move || {
-                        let bridge =
+                        let mut bridge =
                             Bridge::new(dist_sender_clone, bridge_receiver_clone, address, port);
                         bridge.start();
                     }));
@@ -81,7 +78,7 @@ impl Manager {
 
                     let _ = dist_sender.send(EventInfo {
                         event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                            state: api_manager::models::State::Disconnected,
+                            state: api_manager::models::State::Errored { description: error },
                         }),
                         message_data: "".to_string(),
                     });
@@ -94,10 +91,32 @@ impl Manager {
                         // continue
                     }
                 }
-                EventType::Websocket(_) => ws_sender
-                    .send(event)
-                    .expect("Failed to send message to websocket"),
-                _ => panic!("Unknown type remaining"),
+                EventType::Bridge(api_manager::models::BridgeEvents::TerminalRead { message }) => {
+                    println!("[Bridge] Received message: {}", message);
+                    // todo: Group messages in "chunks", to make interface updates better to handle.
+                    let _ = dist_sender.send(EventInfo {
+                        event_type: EventType::Websocket(WebsocketEvents::TerminalRead { message }),
+                        message_data: "".to_string(),
+                    });
+                }
+                EventType::Websocket(ws_event) => {
+                    if let WebsocketEvents::StateUpdate { state } = &ws_event {
+                        if (matches!(state, State::Disconnected)
+                            || matches!(state, State::Errored { description: _ }))
+                            && self.bridge_thread.as_ref().is_some()
+                        {
+                            self.bridge_thread.as_ref().unwrap().abort();
+                            self.bridge_thread.take();
+                            println!("Yeeting connecting");
+                        }
+                    }
+                    ws_sender
+                        .send(EventInfo {
+                            event_type: EventType::Websocket(ws_event),
+                            message_data: "".to_string(),
+                        })
+                        .expect("Failed to send message to websocket");
+                }
             }
         }
     }
