@@ -76,12 +76,13 @@ impl Manager {
                 }) => {
                     eprintln!("[BRIDGE] Creating connection caused an error: {} ", error);
 
-                    let _ = dist_sender.send(EventInfo {
-                        event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                            state: api_manager::models::State::Errored { description: error },
-                        }),
-                        message_data: "".to_string(),
-                    });
+                    dist_sender
+                        .send(EventInfo {
+                            event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
+                                state: api_manager::models::State::Errored { description: error },
+                            }),
+                        })
+                        .expect("Cannot send message");
 
                     if let Some(handle) = &self.bridge_thread {
                         handle.abort();
@@ -94,10 +95,22 @@ impl Manager {
                 EventType::Bridge(api_manager::models::BridgeEvents::TerminalRead { message }) => {
                     println!("[Bridge] Received message: {}", message);
                     // todo: Group messages in "chunks", to make interface updates better to handle.
-                    let _ = dist_sender.send(EventInfo {
-                        event_type: EventType::Websocket(WebsocketEvents::TerminalRead { message }),
-                        message_data: "".to_string(),
-                    });
+                    dist_sender
+                        .send(EventInfo {
+                            event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
+                                message,
+                            }),
+                        })
+                        .expect("Cannot send message");
+                }
+                EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend { message }) => {
+                    bridge_sender
+                        .send(EventInfo {
+                            event_type: EventType::Bridge(
+                                api_manager::models::BridgeEvents::TerminalSend { message },
+                            ),
+                        })
+                        .expect("Cannot send message");
                 }
                 EventType::Websocket(ws_event) => {
                     if let WebsocketEvents::StateUpdate { state } = &ws_event {
@@ -113,7 +126,6 @@ impl Manager {
                     ws_sender
                         .send(EventInfo {
                             event_type: EventType::Websocket(ws_event),
-                            message_data: "".to_string(),
                         })
                         .expect("Failed to send message to websocket");
                 }
@@ -123,7 +135,7 @@ impl Manager {
 }
 
 async fn setup_db() {
-    let _result = OpenOptions::new()
+    let _ = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open("storage.db")

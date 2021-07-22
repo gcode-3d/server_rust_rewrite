@@ -54,30 +54,33 @@ impl Bridge {
 
     // if port fails, emit failure message to distributor.
     pub fn start(&mut self) {
-        let _ = self.distibutor.send(EventInfo {
-            event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                state: api_manager::models::State::Connecting,
-            }),
-            message_data: "".to_string(),
-        });
+        self.distibutor
+            .send(EventInfo {
+                event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
+                    state: api_manager::models::State::Connecting,
+                }),
+            })
+            .expect("cannot send message");
         match serialport::new(&self.address, self.baudrate).open() {
             Ok(mut port) => {
                 println!("[BRIDGE] Port opened");
                 self.state = BridgeState::CONNECTED;
-                let _ = self.distibutor.send(EventInfo {
-                    event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                        state: api_manager::models::State::Connected,
-                    }),
-                    message_data: "".to_string(),
-                });
+                self.distibutor
+                    .send(EventInfo {
+                        event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
+                            state: api_manager::models::State::Connected,
+                        }),
+                    })
+                    .expect("cannot send message");
                 port.set_timeout(Duration::from_millis(10))
                     .expect("Cannot set timeout on port");
                 let mut incoming = port;
                 let mut outgoing = incoming.try_clone().expect("Cannot clone serialport");
                 let receiver = self.receiver.clone();
                 spawn(async move {
+                    println!("Starting bridge listener");
                     while let Some(message) = receiver.iter().next() {
-                        println!("{:?}", message);
+                        println!("[BRIDGE] {:?}", message);
                     }
                 });
 
@@ -95,14 +98,15 @@ impl Bridge {
                                 let string = data.into_owned();
                                 if string == "\n" {
                                     if is_finished_receiving_cap {
-                                        let _ = distributor.send(EventInfo {
-                                            event_type: EventType::Websocket(
-                                                WebsocketEvents::TerminalRead {
-                                                    message: collected.clone(),
-                                                },
-                                            ),
-                                            message_data: "".to_string(),
-                                        });
+                                        distributor
+                                            .send(EventInfo {
+                                                event_type: EventType::Websocket(
+                                                    WebsocketEvents::TerminalRead {
+                                                        message: collected.clone(),
+                                                    },
+                                                ),
+                                            })
+                                            .expect("cannot send message");
                                     } else {
                                         if collected.starts_with("ok") {
                                             if cap_data.len() == 0 {
@@ -136,23 +140,24 @@ impl Bridge {
                                 std::io::ErrorKind::TimedOut => (),
                                 _ => {
                                     eprintln!("[BRIDGE] Read error: {:?}", e);
-                                    let _ = cloned_dist.send(EventInfo {
-                                        event_type: EventType::Websocket(
-                                            WebsocketEvents::StateUpdate {
-                                                state: api_manager::models::State::Errored {
-                                                    description: format!("{}", e),
+                                    cloned_dist
+                                        .send(EventInfo {
+                                            event_type: EventType::Websocket(
+                                                WebsocketEvents::StateUpdate {
+                                                    state: api_manager::models::State::Errored {
+                                                        description: format!("{}", e),
+                                                    },
                                                 },
-                                            },
-                                        ),
-                                        message_data: "".to_string(),
-                                    });
+                                            ),
+                                        })
+                                        .expect("cannot send message");
                                     break;
                                 }
                             },
                         }
                     }
                 });
-                let result = outgoing.write(b"M155 S2\n");
+                let result = outgoing.write(b"M115\n");
                 if result.is_ok() {
                     println!("[BRIDGE] Write result: {}", result.unwrap());
                     outgoing.flush().expect("FLUSH FAIL");
@@ -162,14 +167,15 @@ impl Bridge {
             }
             Err(err) => match err.kind {
                 serialport::ErrorKind::NoDevice => {
-                    let _ = self.distibutor.send(EventInfo {
-                        event_type: EventType::Bridge(
-                            bridge::BridgeEvents::ConnectionCreateError {
-                                error: err.description,
-                            },
-                        ),
-                        message_data: "".to_string(),
-                    });
+                    self.distibutor
+                        .send(EventInfo {
+                            event_type: EventType::Bridge(
+                                bridge::BridgeEvents::ConnectionCreateError {
+                                    error: err.description,
+                                },
+                            ),
+                        })
+                        .expect("cannot send message");
                 }
                 serialport::ErrorKind::InvalidInput => todo!("INV. INPUT"),
                 serialport::ErrorKind::Unknown => todo!("??"),

@@ -16,45 +16,62 @@ use self::{
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use futures::{sink::SinkExt, stream::StreamExt};
 use hyper::{
     header::{self, HeaderValue},
     upgrade::Upgraded,
     Error,
 };
-
 use hyper::{
     service::{make_service_fn, service_fn},
     Method,
 };
+use hyper::{Body, Request, Response, Server};
+use hyper_tungstenite::tungstenite::Message;
 use hyper_tungstenite::{
     tungstenite::protocol::{frame::coding::CloseCode, CloseFrame},
     WebSocketStream,
 };
-
-use futures::{sink::SinkExt, stream::StreamExt};
-use hyper::{Body, Request, Response, Server};
-use hyper_tungstenite::tungstenite::Message;
 use serde_json::json;
 use sqlx::{Connection, SqliteConnection};
-use std::{convert::Infallible, ops::Deref, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, ops::Deref, sync::Arc};
 use tokio::{spawn, sync::Mutex};
+use uuid::Uuid;
+
 pub struct ApiManager {}
 
+/*
+    Function that starts a hyper server.
+
+    Creates a route handler.
+    Create the socket hashmap, and setup arcs for state.
+
+    Arguments:
+    - distributor: The sender for the global events channel.
+    - distributor_receiver: The receiver for the global events channel, intended for the websocket connections.
+
+
+*/
 impl ApiManager {
     pub async fn start(
         distributor: Sender<EventInfo>,
-        websocket_receiver: Receiver<EventInfo>,
+        distributor_receiver: Receiver<EventInfo>,
     ) -> () {
+        let sockets: Arc<Mutex<HashMap<u128, Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::Disconnected));
         let make_svc = make_service_fn(move |_| {
             let distributor = distributor.clone();
-            let receiver = websocket_receiver.clone();
-            let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::Disconnected));
+            let receiver = distributor_receiver.clone();
+            let state = state.clone();
+            let sockets = sockets.clone();
             async move {
                 Ok::<_, Error>(service_fn(move |req| {
-                    let curr_state = state.clone();
+                    let state = state.clone();
                     let dist_clone = distributor.clone();
                     let rcvr_clone = receiver.clone();
-                    async move { basic_handler(req, dist_clone, rcvr_clone, curr_state).await }
+                    let sockets = sockets.clone();
+                    async move { router(req, dist_clone, rcvr_clone, state, sockets).await }
                 }))
             }
         });
@@ -62,19 +79,36 @@ impl ApiManager {
         let addr = ([0, 0, 0, 0], 8000).into();
 
         let server = Server::bind(&addr).serve(make_svc);
-        println!("Listening on http://{}", addr);
+        println!("[API] Listening on http://{}", addr);
         let _ = server.await;
     }
 }
+/*
+    Function that gets called when a new request is received.
+    Based on path the path is routed using a route function,
+    or upgraded and passed along to the websocket handler.
 
-async fn basic_handler(
+    Arguments:
+    - req: The hyper request.
+    - distributor: The sender for the global events channel.
+    - receiver: The receiver for the global events channel.
+    - state: current state arc, used by websockets.
+    - sockets: hashmap including all websocket senders, mapped by uuid.
+
+*/
+async fn router(
     req: Request<Body>,
     distributor: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
     state: Arc<Mutex<State>>,
+    sockets: Arc<Mutex<HashMap<u128, Sender<String>>>>,
 ) -> Result<Response<Body>, Infallible> {
+    /*
+    In case the request is an upgrade request, and the path is /ws:
+    Check if the request has the correct headers and tokens and start upgrading.
+    Pass the upgraded connection to the websocket_handler.
+    */
     if hyper_tungstenite::is_upgrade_request(&req) && req.uri().path().eq("/ws") {
-        println!("starting ws upgrade");
         if !req.headers().contains_key("sec-websocket-protocol") {
             return Ok(unauthorized_response());
         }
@@ -132,12 +166,18 @@ async fn basic_handler(
                         user,
                         receiver,
                         state,
+                        sockets,
                     )
                     .await
                     {
                         eprintln!("Error websocket: {}", e);
                     }
                 });
+                /*
+                Although not all browers expect/support it,
+                even although we are using the protocol headers incorrectly,
+                we still comply with the standard by sending back the same "protocol" (token).
+                */
                 response.headers_mut().append(
                     header::SEC_WEBSOCKET_PROTOCOL,
                     HeaderValue::from_str(&token).unwrap(),
@@ -158,17 +198,47 @@ async fn basic_handler(
     }
 }
 
+/*
+    Function gets called by the router after the request has been upgraded to a websocket connection.
+    The function keeps loaded as long as a connection is created
+
+
+    Arguments:
+    - websocket: The websocket object
+    - user: parsed user including permissions.
+    - receiver: Global receiver to catch events related to websockets.
+    - state: current state arc, used for sending intial ready event.
+    - sockets: hashmap including all websocket senders, mapped by uuid.
+
+*/
 async fn websocket_handler(
     websocket: WebSocketStream<Upgraded>,
     user: AuthPermissions,
     receiver: Receiver<EventInfo>,
     state: Arc<Mutex<State>>,
+    sockets: Arc<Mutex<HashMap<u128, Sender<String>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (outgoing, mut incoming) = websocket.split();
     let outgoing = Arc::new(Mutex::new(outgoing));
-    println!("{:?}", user);
     let (local_sender, local_receiver) = unbounded::<String>();
+    let id = Uuid::new_v4();
+    {
+        sockets
+            .lock()
+            .await
+            .insert(id.clone().as_u128(), local_sender);
+
+        println!(
+            "[WS] New connection: {} | User: {}",
+            id.to_hyphenated(),
+            &user.username()
+        );
+    }
     let current_state = state.clone();
+    let sockets_clone = sockets.clone();
+    /*
+        Setup a receiver reader for the global event channel.
+    */
     spawn(async move {
         while let Some(event) = receiver.iter().next() {
             match event.event_type {
@@ -191,7 +261,12 @@ async fn websocket_handler(
                             }
                         ]
                     });
-                    let _ = local_sender.send(json.to_string());
+                    for sender in sockets_clone.lock().await.iter() {
+                        sender
+                            .1
+                            .send(json.to_string())
+                            .expect("Cannot send message");
+                    }
                 }
 
                 models::EventType::Websocket(models::WebsocketEvents::StateUpdate { state }) => {
@@ -230,7 +305,12 @@ async fn websocket_handler(
                         })
                         .to_string(),
                     };
-                    let _ = local_sender.send(json);
+                    for sender in sockets_clone.lock().await.iter() {
+                        sender
+                            .1
+                            .send(json.to_string())
+                            .expect("Cannot send message");
+                    }
                 }
                 EventType::Bridge(_) => todo!(),
                 EventType::Websocket(_) => todo!(),
@@ -238,6 +318,10 @@ async fn websocket_handler(
         }
     });
     let outgoing_clone = outgoing.clone();
+    let sockets_clone = sockets.clone();
+    /*
+        Read incoming messages from the websocket connection.
+    */
     spawn(async move {
         while let Some(result) = incoming.next().await {
             match result {
@@ -245,31 +329,47 @@ async fn websocket_handler(
                     println!("Incoming: {:?}", message);
 
                     if message.is_close() {
-                        let _ = outgoing_clone
+                        let _ = sockets_clone.lock().await.remove(&id.as_u128());
+                        outgoing_clone
                             .lock()
                             .await
                             .send(Message::Close(Some(CloseFrame {
                                 code: CloseCode::Normal,
                                 reason: std::borrow::Cow::Borrowed(""),
                             })))
-                            .await;
+                            .await
+                            .expect("Cannot send message");
+                        continue;
+                    }
+                    if message.is_ping() {
+                        outgoing_clone
+                            .lock()
+                            .await
+                            .send(Message::Pong(message.into_data()))
+                            .await
+                            .expect("Cannot send message");
+                        continue;
                     }
                     if message.is_text() == false {
-                        let _ = outgoing_clone
+                        let _ = sockets_clone.lock().await.remove(&id.as_u128());
+                        outgoing_clone
                             .lock()
                             .await
                             .send(Message::Close(Some(CloseFrame {
                                 code: CloseCode::Policy,
                                 reason: std::borrow::Cow::Borrowed("Bad data"),
                             })))
-                            .await;
+                            .await
+                            .expect("Cannot send message");
+                        continue;
                     }
 
-                    let _ = outgoing_clone
+                    outgoing_clone
                         .lock()
                         .await
                         .send(Message::text("Boop back!"))
-                        .await;
+                        .await
+                        .expect("Cannot send message");
                 }
                 Err(e) => {
                     eprintln!("{}", e);
@@ -278,15 +378,24 @@ async fn websocket_handler(
         }
     });
     let outgoing_clone = outgoing.clone();
+
+    /*
+        Read messages coming from the local_sender pushed into the hashmap.
+    */
     spawn(async move {
         while let Some(message) = local_receiver.iter().next() {
-            let _ = outgoing_clone
+            outgoing_clone
                 .lock()
                 .await
                 .send(Message::text(message))
-                .await;
+                .await
+                .expect("Cannot send message");
         }
     });
+
+    /*
+        Construct intial ready event message.
+    */
     let mut json = json!({
             "type":"ready",
             "content": {
@@ -307,38 +416,51 @@ async fn websocket_handler(
                          "update.check": user.update(),
                          "update.manage": user.update()
                         }
-                    }
+                    },
+                    "|": "|"
             }
     })
     .to_string();
-    json.chars().next_back();
-    json.chars().next_back();
 
     match state.lock().await.deref() {
         State::Disconnected => {
-            json = format!("{}, {{\"state\": \"Disconnected\"}}}}}}", json);
+            json = json.replacen("\"|\":\"|\"", r#""state": "Disconnected""#, 1);
         }
         State::Connecting => {
-            json = format!("{}, {{\"state\": \"Connecting\"}}}}}}", json);
+            json = json.replacen("\"|\":\"|\"", r#""state": "Connecting""#, 1);
         }
         State::Connected => {
-            json = format!("{}, {{\"state\": \"Connected\"}}}}}}", json);
+            json = json.replacen("\"|\":\"|\"", r#""state": "Connected""#, 1);
         }
         State::Errored { description } => {
-            json = format!(
-                "{}, {}}}}}",
-                json,
-                json!({
-                    "state": "errored",
-                    "description": description
-                })
-            )
+            json = json.replacen(
+                "\"|\":\"|\"",
+                format!(
+                    r#""state": "Errored","description": {{"errorDescription":"{}"}}"#,
+                    description
+                )
+                .as_str(),
+                1,
+            );
         }
     };
-    let _ = outgoing.lock().await.send(Message::text(json)).await;
+    outgoing
+        .lock()
+        .await
+        .send(Message::text(json))
+        .await
+        .expect("Cannot send message");
     return Ok(());
 }
 
+/*
+    Function gets called by the router after the request isn't a websocket upgrade request.
+
+    Arguments:
+    - request: Original hyper request.
+    - distributor: Global sender to send events to.
+
+*/
 async fn handle_route(
     mut request: Request<Body>,
     distributor: Sender<EventInfo>,
@@ -350,6 +472,7 @@ async fn handle_route(
         return not_found_response();
     }
 
+    // In case the request is an OPTIONS request, handle with cors headers.
     if request.method() == Method::OPTIONS {
         let result = handle_option_requests(&request);
         if result.is_some() {
@@ -357,15 +480,16 @@ async fn handle_route(
         }
     }
 
-    // First do exact matches
+    // Handle exact messages.
     if request.method() == Method::GET && request.uri().path().eq("/api/ping") {
-        let _ = distributor.send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
-                address: "com3".to_string(),
-                port: 115200,
-            }),
-            message_data: "".to_string(),
-        });
+        distributor
+            .send(EventInfo {
+                event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
+                    address: "com3".to_string(),
+                    port: 115200,
+                }),
+            })
+            .expect("Cannot send message");
         return ping::handler(request);
     }
     if request.method().eq(&Method::POST) && request.uri().path().eq("/api/login") {
@@ -383,6 +507,15 @@ async fn handle_route(
     return not_found_response();
 }
 
+/*
+    Function gets called by the handle_route function.
+
+    Based on the path, create a new response and add the appropriate corse headers.
+
+    Arguments:
+    - request: Original hyper request.
+
+*/
 fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
     if request.uri().path() == "/api/login" {
         return Some(

@@ -207,7 +207,6 @@ pub struct TokenReturnType {
 #[derive(Clone, Debug)]
 pub struct EventInfo {
     pub event_type: EventType,
-    pub message_data: String,
 }
 
 #[derive(Clone, Debug)]
@@ -227,6 +226,7 @@ pub enum BridgeEvents {
     ConnectionCreate { address: String, port: u32 },
     ConnectionCreateError { error: String },
     TerminalRead { message: String },
+    TerminalSend { message: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
