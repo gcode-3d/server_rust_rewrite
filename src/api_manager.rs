@@ -482,14 +482,6 @@ async fn handle_route(
 
     // Handle exact messages.
     if request.method() == Method::GET && request.uri().path().eq("/api/ping") {
-        distributor
-            .send(EventInfo {
-                event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
-                    address: "com3".to_string(),
-                    port: 115200,
-                }),
-            })
-            .expect("Cannot send message");
         return ping::handler(request);
     }
     if request.method().eq(&Method::POST) && request.uri().path().eq("/api/login") {
@@ -503,6 +495,9 @@ async fn handle_route(
     }
     if request.method().eq(&Method::PUT) && request.uri().path().eq("/api/files") {
         return routes::upload_file::handler(&mut request).await;
+    }
+    if request.method().eq(&Method::PUT) && request.uri().path().eq("/api/connection") {
+        return routes::create_connection::handler(request, distributor).await;
     }
     return not_found_response();
 }
@@ -522,6 +517,7 @@ fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );
@@ -531,6 +527,7 @@ fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );
@@ -554,6 +551,16 @@ fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
                     header::ACCESS_CONTROL_ALLOW_HEADERS,
                     "X-Requested-With,content-type, Authorization, X-force-upload",
                 )
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+    if request.uri().path() == "/api/connection" {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "PUT")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );

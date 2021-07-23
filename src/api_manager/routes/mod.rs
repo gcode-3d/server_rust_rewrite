@@ -1,3 +1,4 @@
+pub mod create_connection;
 pub mod list_files;
 pub mod list_settings;
 pub mod login;
