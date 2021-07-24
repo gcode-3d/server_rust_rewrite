@@ -14,6 +14,8 @@ use crate::api_manager::{
     responses::{bad_request_response, server_error_response, unauthorized_response},
 };
 
+pub const PATH: &str = "/api/login";
+pub const METHODS: &str = "POST";
 pub async fn handler(mut request: Request<Body>) -> Response<Body> {
     if !request.headers().contains_key(header::CONTENT_TYPE) {
         return bad_request_response();

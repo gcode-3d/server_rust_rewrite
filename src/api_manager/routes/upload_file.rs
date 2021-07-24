@@ -19,6 +19,9 @@ use crate::api_manager::{
     },
 };
 
+pub const METHODS: &str = "GET, POST";
+pub const PATH: &str = "/api/files";
+
 pub async fn handler(req: &mut Request<Body>) -> Response<Body> {
     if !req.headers().contains_key("content-type") {
         return bad_request_response();
@@ -172,7 +175,7 @@ pub async fn handler(req: &mut Request<Body>) -> Response<Body> {
             return Response::builder()
                 .header(header::CONTENT_TYPE, "text/plain")
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "PUT")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, METHODS)
                 .status(StatusCode::CREATED)
                 .body(Body::from("Created"))
                 .expect("Failed to construct valid response");

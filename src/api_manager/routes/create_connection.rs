@@ -3,6 +3,8 @@ use hyper::{header, Body, Request, Response};
 use sqlx::{Connection, SqliteConnection};
 
 use crate::api_manager::models::{BridgeEvents, EventInfo, EventType, SettingRow};
+pub const METHODS: &str = "PUT";
+pub const PATH: &str = "/api/connection";
 
 pub async fn handler(_request: Request<Body>, distributor: Sender<EventInfo>) -> Response<Body> {
     let result = async {

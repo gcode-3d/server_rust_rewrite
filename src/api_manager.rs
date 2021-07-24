@@ -11,7 +11,6 @@ use crate::api_manager::{
 use self::{
     models::{AuthPermissions, EventInfo},
     responses::bad_request_response,
-    routes::ping,
 };
 
 use chrono::{DateTime, Utc};
@@ -329,16 +328,21 @@ async fn websocket_handler(
                     println!("Incoming: {:?}", message);
 
                     if message.is_close() {
-                        let _ = sockets_clone.lock().await.remove(&id.as_u128());
-                        outgoing_clone
+                        sockets_clone
+                            .lock()
+                            .await
+                            .remove(&id.as_u128())
+                            .expect("Cannot remove socket");
+
+                        let _ = outgoing_clone
                             .lock()
                             .await
                             .send(Message::Close(Some(CloseFrame {
                                 code: CloseCode::Normal,
                                 reason: std::borrow::Cow::Borrowed(""),
                             })))
-                            .await
-                            .expect("Cannot send message");
+                            .await;
+
                         continue;
                     }
                     if message.is_ping() {
@@ -481,22 +485,27 @@ async fn handle_route(
     }
 
     // Handle exact messages.
-    if request.method() == Method::GET && request.uri().path().eq("/api/ping") {
-        return ping::handler(request);
+    if request.method() == Method::GET && request.uri().path().eq(routes::ping::PATH) {
+        return routes::ping::handler(request);
     }
-    if request.method().eq(&Method::POST) && request.uri().path().eq("/api/login") {
+    if request.method().eq(&Method::POST) && request.uri().path().eq(routes::login::PATH) {
         return routes::login::handler(request).await;
     }
-    if request.method().eq(&Method::GET) && request.uri().path().eq("/api/settings") {
+    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::list_settings::PATH) {
         return routes::list_settings::handler(request).await;
     }
-    if request.method().eq(&Method::GET) && request.uri().path().eq("/api/files") {
+    if request.method().eq(&Method::POST) && request.uri().path().eq(routes::update_settings::PATH)
+    {
+        return routes::update_settings::handler(request).await;
+    }
+    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::list_files::PATH) {
         return routes::list_files::handler(request).await;
     }
-    if request.method().eq(&Method::PUT) && request.uri().path().eq("/api/files") {
+    if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::upload_file::PATH) {
         return routes::upload_file::handler(&mut request).await;
     }
-    if request.method().eq(&Method::PUT) && request.uri().path().eq("/api/connection") {
+    if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::create_connection::PATH)
+    {
         return routes::create_connection::handler(request, distributor).await;
     }
     return not_found_response();
@@ -512,41 +521,51 @@ async fn handle_route(
 
 */
 fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
-    if request.uri().path() == "/api/login" {
+    if request.uri().path() == routes::login::PATH {
         return Some(
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::login::METHODS)
                 .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );
     }
-    if request.uri().path() == "/api/ping" {
+    if request.uri().path() == routes::ping::PATH {
         return Some(
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::ping::METHODS)
                 .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );
     }
-    if request.uri().path() == "/api/settings" {
+    if request.uri().path() == routes::list_settings::PATH {
         return Some(
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_METHODS,
+                    routes::list_settings::METHODS,
+                )
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_HEADERS,
+                    "Authorization, Content-Type",
+                )
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
         );
     }
-    if request.uri().path() == "/api/files" {
+
+    if request.uri().path() == routes::upload_file::PATH {
         return Some(
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, PUT")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_METHODS,
+                    routes::upload_file::METHODS,
+                )
                 .header(
                     header::ACCESS_CONTROL_ALLOW_HEADERS,
                     "X-Requested-With,content-type, Authorization, X-force-upload",
@@ -555,11 +574,15 @@ fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
                 .expect("Couldn't create a valid response"),
         );
     }
-    if request.uri().path() == "/api/connection" {
+
+    if request.uri().path() == routes::create_connection::PATH {
         return Some(
             Response::builder()
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "PUT")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_METHODS,
+                    routes::create_connection::METHODS,
+                )
                 .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),

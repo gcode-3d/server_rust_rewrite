@@ -6,6 +6,9 @@ use crate::api_manager::{
     responses::{server_error_response, unauthorized_response},
 };
 
+pub const PATH: &str = "/api/settings";
+pub const METHODS: &str = "GET, POST";
+
 pub async fn handler(req: Request<Body>) -> Response<Body> {
     if !req.headers().contains_key("authorization") {
         return unauthorized_response();

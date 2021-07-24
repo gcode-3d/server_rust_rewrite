@@ -5,7 +5,8 @@ use hyper::{header, Body, Request, Response};
 use serde_json::json;
 
 use crate::api_manager::responses::server_error_response;
-
+pub const METHODS: &str = "GET, POST";
+pub const PATH: &str = "/api/files";
 pub async fn handler(_request: Request<Body>) -> Response<Body> {
     let result = fs::create_dir_all("./files");
 

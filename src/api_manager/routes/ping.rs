@@ -1,5 +1,8 @@
 use hyper::{header, Body, Request, Response};
 
+pub const METHODS: &str = "GET";
+pub const PATH: &str = "/api/ping";
+
 pub fn handler(_request: Request<Body>) -> Response<Body> {
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")
