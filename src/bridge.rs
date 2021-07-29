@@ -1,7 +1,7 @@
 use std::{
     io::Write,
     sync::{Arc, Mutex},
-    thread::{self, sleep},
+    thread::sleep,
     time::Duration,
 };
 
