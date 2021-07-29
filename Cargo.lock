@@ -1688,6 +1688,7 @@ dependencies = [
  "futures",
  "hyper",
  "hyper-tungstenite",
+ "lazy_static",
  "rand",
  "regex",
  "sentry",

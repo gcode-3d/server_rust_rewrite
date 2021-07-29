@@ -1,6 +1,15 @@
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufReader, Lines},
+};
+
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
+
+use crate::{bridge::BridgeState, parser::TempInfo};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AuthDetails {
     username: String,
@@ -204,35 +213,138 @@ pub struct TokenReturnType {
     token: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct EventInfo {
     pub event_type: EventType,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum EventType {
+    KILL,
     Bridge(BridgeEvents),
     Websocket(WebsocketEvents),
 }
 #[derive(Clone, Debug)]
 pub enum WebsocketEvents {
-    TerminalSend { message: String },
-    TerminalRead { message: String },
-    StateUpdate { state: State },
+    TerminalRead {
+        message: String,
+    },
+    TerminalSend {
+        message: String,
+    },
+    TempUpdate {
+        tools: Vec<TempInfo>,
+        bed: Option<TempInfo>,
+        chamber: Option<TempInfo>,
+    },
+    StateUpdate {
+        state: BridgeState,
+        description: StateDescription,
+    },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum BridgeEvents {
-    ConnectionCreate { address: String, port: u32 },
-    ConnectionCreateError { error: String },
-    TerminalRead { message: String },
-    TerminalSend { message: String },
+    ConnectionCreate {
+        address: String,
+        port: u32,
+    },
+    ConnectionCreateError {
+        error: String,
+    },
+    TerminalRead {
+        message: String,
+    },
+    TerminalSend {
+        message: String,
+    },
+    StateUpdate {
+        state: BridgeState,
+        description: StateDescription,
+    },
+    PrintStart {
+        info: PrintInfo,
+    },
+    PrintEnd,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum State {
-    Disconnected,
-    Connecting,
-    Connected,
-    Errored { description: String },
+#[derive(Debug)]
+pub struct PrintInfo {
+    pub filename: String,
+    pub filesize: u64,
+    data_sent: u64,
+    pub file_reader: Option<Lines<BufReader<File>>>,
+    pub start: DateTime<Utc>,
+    pub end: Option<DateTime<Utc>>,
+    line_number: u64,
+    cache: HashMap<u64, String>,
+}
+
+impl PrintInfo {
+    pub fn new(
+        filename: String,
+        filesize: u64,
+        file_reader: Option<Lines<BufReader<File>>>,
+        start: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            filename,
+            filesize,
+            data_sent: 0,
+            file_reader,
+            start,
+            end: None,
+            line_number: 0,
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn get_sent_line(&self, line_number: u64) -> Option<&String> {
+        return self.cache.get(&line_number);
+    }
+
+    pub fn remove_sent_line(&mut self, line_number: u64) {
+        self.cache.remove(&line_number);
+    }
+    pub fn insert_sent_line(&mut self, line_number: u64, line: String) {
+        self.cache.insert(line_number, line);
+    }
+
+    pub fn progress(&self) -> f64 {
+        if self.filesize == 0 {
+            return 0.0;
+        }
+        return (self.data_sent as f64 / self.filesize as f64) * 100.0;
+    }
+
+    pub fn add_bytes_sent(&mut self, bytes: u64) {
+        if self.filesize == 0 {
+            return;
+        }
+        self.data_sent = self.data_sent + bytes;
+    }
+    pub fn advance(&mut self) -> u64 {
+        self.line_number += 1;
+        return self.line_number;
+    }
+}
+
+#[derive(Debug)]
+pub struct StateWrapper {
+    pub state: BridgeState,
+    pub description: StateDescription,
+}
+
+#[derive(Debug, Clone)]
+pub enum StateDescription {
+    None,
+    Error {
+        message: String,
+    },
+    Print {
+        filename: String,
+        progress: f64,
+        start: DateTime<Utc>,
+        end: Option<DateTime<Utc>>,
+    },
 }

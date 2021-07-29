@@ -2,10 +2,7 @@ use hyper::{body, header, Body, Request, Response};
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 
-use crate::api_manager::{
-    models::{AuthPermissions, SettingRow},
-    responses::{bad_request_response, server_error_response, unauthorized_response},
-};
+use crate::api_manager::responses::{bad_request_response, unauthorized_response};
 
 pub const PATH: &str = "/api/settings";
 pub const METHODS: &str = "GET, POST";
