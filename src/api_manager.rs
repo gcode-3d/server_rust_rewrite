@@ -545,7 +545,6 @@ async fn websocket_handler(
     });
 
     let state_info = state.lock().await;
-    println!("{:?}", state_info);
     match state_info.state {
         BridgeState::DISCONNECTED => {
             *content = json!({
