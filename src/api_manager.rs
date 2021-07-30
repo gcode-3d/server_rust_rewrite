@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use futures::{sink::SinkExt, stream::StreamExt};
 use hyper::{
-    header::{self, HeaderValue},
+    header::{self, HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN},
     upgrade::Upgraded,
     Error,
 };
@@ -107,7 +107,7 @@ impl ApiManager {
 
 */
 async fn router(
-    req: Request<Body>,
+    mut req: Request<Body>,
     file_server: Static,
     distributor: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
@@ -204,16 +204,25 @@ async fn router(
         }
     } else if req.uri().path().eq("/ws") {
         return Ok(bad_request_response());
-    } else if !req.uri().path().starts_with("/api/") {
+    } else if req.uri().path().starts_with("/api/") {
+        return Ok(handle_route(req, distributor, state).await);
+    } else {
+        if !req.uri().path().contains(".") {
+            *req.uri_mut() = "/".parse().unwrap();
+        }
         return match file_server.serve(req).await {
-            Ok(response) => Ok(response),
+            Ok(mut response) => {
+                response.headers_mut().append(
+                    ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_str("*").unwrap(),
+                );
+                Ok(response)
+            }
             Err(err) => {
                 eprintln!("[FILE_SERVER][ERROR] {}", err);
                 Ok(server_error_response())
             }
         };
-    } else {
-        return Ok(handle_route(req, distributor, state).await);
     }
 }
 
@@ -296,10 +305,10 @@ async fn websocket_handler(
                         ]
                     });
                     for sender in sockets_clone.lock().await.iter() {
-                        sender
-                            .1
-                            .send(json.to_string())
-                            .expect("Cannot send message");
+                        let result = sender.1.send(json.to_string());
+                        if result.is_err() {
+                            sockets_clone.lock().await.remove(sender.0);
+                        }
                     }
                 }
                 models::EventType::Websocket(models::WebsocketEvents::TerminalSend { message }) => {
