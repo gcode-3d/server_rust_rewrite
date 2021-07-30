@@ -253,30 +253,3 @@ impl TempInfo {
         }
     }
 }
-
-/*
-{
-    type: "temperature_change",
-    content: {
-        tools: [
-            {
-                    currentTemp: parseFloat(bedResult[1]),
-                    targetTemp: parseFloat(bedResult[2]),
-                },
-                                {
-                    currentTemp: parseFloat(bedResult[1]),
-                    targetTemp: parseFloat(bedResult[2]),
-                }
-        ],
-        bed: {
-                    currentTemp: parseFloat(bedResult[1]),
-                    targetTemp: parseFloat(bedResult[2]),
-                } || null
-    },
-    chamber: {
-                    currentTemp: parseFloat(bedResult[1]),
-                    targetTemp: parseFloat(bedResult[2]),
-                } || null
-}
-
-*/
