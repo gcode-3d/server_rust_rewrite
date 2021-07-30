@@ -14,6 +14,7 @@ use tokio::{
 };
 mod api_manager;
 mod bridge;
+mod client_update_check;
 mod parser;
 
 #[tokio::main]
@@ -26,6 +27,9 @@ async fn main() {
         },
     ));
     setup_db().await;
+
+    client_update_check::check_updates().await;
+
     let mut manager = Manager::new();
     manager.start().await;
 }
@@ -159,7 +163,6 @@ impl Manager {
                     description,
                 }) => {
                     if self.bridge_thread.is_none() {
-                        println!("CONT.");
                         continue;
                     }
 
@@ -254,14 +257,4 @@ async fn setup_db() {
         )
         .await
         .expect("Error while creating tables.");
-
-    let x = connection.fetch_all("select * from tokens").await.unwrap();
-    println!("TOKENS: ");
-    for y in x {
-        println!(
-            "{}: {}",
-            (y.try_get("username") as Result<String, Error>).unwrap(),
-            (y.try_get("token") as Result<String, Error>).unwrap()
-        );
-    }
 }

@@ -81,7 +81,6 @@ pub async fn handler(req: &mut Request<Body>) -> Response<Body> {
             let folder_create_result = fs::create_dir_all("./files");
 
             if folder_create_result.is_err() {
-                eprintln!("{}", folder_create_result.unwrap_err());
                 return responses::server_error_response();
             }
 

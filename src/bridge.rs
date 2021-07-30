@@ -62,6 +62,7 @@ impl Bridge {
 
     // if port fails, emit failure message to distributor.
     pub fn start(&mut self) {
+        let is_canceled = Arc::new(Mutex::new(false));
         *self.state.lock().unwrap() = BridgeState::CONNECTING;
         self.distibutor
             .send(EventInfo {
@@ -120,7 +121,7 @@ impl Bridge {
         let print_info = self.print_info.clone();
         let distributor = self.distibutor.clone();
         let current_state = self.state.clone();
-
+        let canceled = is_canceled.clone();
         spawn(async move {
             let mut outgoing = outgoing_for_listener;
             println!(
@@ -133,6 +134,7 @@ impl Bridge {
                 match event.event_type {
                     EventType::KILL => {
                         drop(outgoing);
+                        *canceled.lock().unwrap() = true;
                         break;
                     }
                     EventType::Bridge(BridgeEvents::TerminalSend { mut message }) => {
@@ -218,6 +220,7 @@ impl Bridge {
         let distributor = self.distibutor.clone();
         let print_info = self.print_info.clone();
         let state = self.state.clone();
+        let canceled = is_canceled.clone();
         spawn(async move {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
@@ -227,6 +230,9 @@ impl Bridge {
             loop {
                 match incoming.read(serial_buf.as_mut_slice()) {
                     Ok(t) => {
+                        if *canceled.lock().unwrap() {
+                            break;
+                        }
                         let data = String::from_utf8_lossy(&serial_buf[..t]);
                         let string = data.into_owned();
                         if string == "\n" {
@@ -284,8 +290,15 @@ impl Bridge {
                         }
                     }
                     Err(ref e) => match e.kind() {
-                        std::io::ErrorKind::TimedOut => (),
+                        std::io::ErrorKind::TimedOut => {
+                            if *is_canceled.lock().unwrap() {
+                                break;
+                            }
+                        }
                         _ => {
+                            if *is_canceled.lock().unwrap() {
+                                break;
+                            }
                             eprintln!("[BRIDGE][ERROR][READ]: {:?}", e);
                             cloned_dist
                                 .send(EventInfo {

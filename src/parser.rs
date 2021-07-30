@@ -110,7 +110,6 @@ pub fn handle_print(
                 info.add_bytes_sent(line.len() as u64);
                 let difference = format!("{:.1}", info.progress()).parse::<f64>().unwrap()
                     - prev_progress.parse::<f64>().unwrap();
-                println!("difference: {}", difference);
 
                 if difference > 0.1 {
                     distributor

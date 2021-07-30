@@ -74,26 +74,21 @@ pub async fn handler(
         }
     };
     if body.is_none() {
-        println!("no body");
         return bad_request_response();
     }
 
     let json = serde_json::from_str::<Value>(&body.unwrap());
 
     if json.is_err() {
-        println!("no json {}", json.unwrap_err());
         return bad_request_response();
     }
     let json = json.unwrap();
     let filename = json.get("printName");
     if filename.is_none() {
-        println!("no filename");
-
         return bad_request_response();
     }
     let filename = filename.unwrap().as_str();
     if filename.is_none() {
-        println!("no string?");
         return bad_request_response();
     }
     let filename = filename.unwrap().trim();

@@ -53,6 +53,9 @@ pub async fn handler(mut request: Request<Body>) -> Response<Body> {
                     ).to_string();
                     return Response::builder()
                         .status(StatusCode::CREATED)
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .header(header::ACCESS_CONTROL_ALLOW_METHODS, METHODS)
+                        .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                         .body(Body::from(data))
                         .expect("Failed to construct response");
                 }

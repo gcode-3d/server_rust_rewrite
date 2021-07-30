@@ -1,12 +1,11 @@
 pub mod models;
 pub mod responses;
-
 mod routes;
 
 use crate::{
     api_manager::{
         models::EventType,
-        responses::{not_found_response, unauthorized_response},
+        responses::{not_found_response, server_error_response, unauthorized_response},
     },
     bridge::BridgeState,
 };
@@ -29,6 +28,7 @@ use hyper::{
     Method,
 };
 use hyper::{Body, Request, Response, Server};
+use hyper_staticfile::Static;
 use hyper_tungstenite::tungstenite::Message;
 use hyper_tungstenite::{
     tungstenite::protocol::{frame::coding::CloseCode, CloseFrame},
@@ -36,7 +36,7 @@ use hyper_tungstenite::{
 };
 use serde_json::{json, Value};
 use sqlx::{Connection, SqliteConnection};
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc};
 use tokio::{spawn, sync::Mutex};
 use uuid::Uuid;
 
@@ -66,19 +66,22 @@ impl ApiManager {
             state: BridgeState::DISCONNECTED,
             description: models::StateDescription::None,
         }));
+        let file_server = Static::new(Path::new("client"));
 
         let make_svc = make_service_fn(move |_| {
             let distributor = distributor.clone();
             let receiver = distributor_receiver.clone();
             let state = state.clone();
             let sockets = sockets.clone();
+            let file_server = file_server.clone();
             async move {
                 Ok::<_, Error>(service_fn(move |req| {
                     let state = state.clone();
                     let dist_clone = distributor.clone();
                     let rcvr_clone = receiver.clone();
                     let sockets = sockets.clone();
-                    async move { router(req, dist_clone, rcvr_clone, state, sockets).await }
+                    let file_server = file_server.clone();
+                    async move { router(req, file_server, dist_clone, rcvr_clone, state, sockets).await }
                 }))
             }
         });
@@ -105,6 +108,7 @@ impl ApiManager {
 */
 async fn router(
     req: Request<Body>,
+    file_server: Static,
     distributor: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
     state: Arc<Mutex<StateWrapper>>,
@@ -200,6 +204,14 @@ async fn router(
         }
     } else if req.uri().path().eq("/ws") {
         return Ok(bad_request_response());
+    } else if !req.uri().path().starts_with("/api/") {
+        return match file_server.serve(req).await {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                eprintln!("[FILE_SERVER][ERROR] {}", err);
+                Ok(server_error_response())
+            }
+        };
     } else {
         return Ok(handle_route(req, distributor, state).await);
     }
@@ -426,8 +438,6 @@ async fn websocket_handler(
         while let Some(result) = incoming.next().await {
             match result {
                 Ok(message) => {
-                    println!("Incoming: {:?}", message);
-
                     if message.is_close() {
                         sockets_clone
                             .lock()
@@ -615,13 +625,6 @@ async fn handle_route(
     distributor: Sender<EventInfo>,
     state: Arc<Mutex<StateWrapper>>,
 ) -> Response<Body> {
-    println!("[API] Request url: {}", request.uri());
-
-    if !request.uri().path().starts_with("/api") {
-        println!("Matched first fallback, no /api");
-        return not_found_response();
-    }
-
     // In case the request is an OPTIONS request, handle with cors headers.
     if request.method() == Method::OPTIONS {
         let result = handle_option_requests(&request);
