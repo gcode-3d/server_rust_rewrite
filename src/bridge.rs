@@ -95,19 +95,21 @@ impl Bridge {
             return;
         }
         let distributor = self.distibutor.clone();
+        let state = self.state.clone();
         let timeout = spawn(async move {
             sleep(Duration::from_secs(10));
-
-            distributor
-                .send(EventInfo {
-                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                        state: BridgeState::ERRORED,
-                        description: api_manager::models::StateDescription::Error {
-                            message: "Timed out".to_string(),
-                        },
-                    }),
-                })
-                .expect("Cannot send message");
+            if *state.lock().unwrap() == BridgeState::CONNECTING {
+                distributor
+                    .send(EventInfo {
+                        event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                            state: BridgeState::ERRORED,
+                            description: api_manager::models::StateDescription::Error {
+                                message: "Timed out".to_string(),
+                            },
+                        }),
+                    })
+                    .expect("Cannot send message");
+            }
         });
 
         let mut port = port_result.unwrap();
