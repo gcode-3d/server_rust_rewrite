@@ -6,7 +6,7 @@ use api_manager::ApiManager;
 
 use bridge::Bridge;
 use crossbeam_channel::unbounded;
-use sqlx::{Connection, Error, Executor, Row, SqliteConnection};
+use sqlx::{Connection, Executor, SqliteConnection};
 use tokio::{
     fs::OpenOptions,
     spawn,

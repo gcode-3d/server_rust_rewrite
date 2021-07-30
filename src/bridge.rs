@@ -96,7 +96,7 @@ impl Bridge {
         }
         let distributor = self.distibutor.clone();
         let state = self.state.clone();
-        let timeout = spawn(async move {
+        spawn(async move {
             sleep(Duration::from_secs(10));
             if *state.lock().unwrap() == BridgeState::CONNECTING {
                 distributor
