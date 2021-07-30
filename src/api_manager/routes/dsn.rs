@@ -1,7 +1,7 @@
-use hyper::{body, header, Body, Request, Response};
+use hyper::{header, Body, Response};
 use serde::Deserialize;
 use serde_json::json;
-use sqlx::{Connection, Error, Executor, Row, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 
 use crate::api_manager::{models::SettingRow, responses::bad_request_response};
 
