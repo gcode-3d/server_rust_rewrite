@@ -660,6 +660,9 @@ async fn handle_route(
     if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::start_print::PATH) {
         return routes::start_print::handler(request, distributor, state).await;
     }
+    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::dsn::PATH) {
+        return routes::dsn::handler().await;
+    }
     return not_found_response();
 }
 
@@ -748,6 +751,17 @@ fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
                     header::ACCESS_CONTROL_ALLOW_METHODS,
                     routes::start_print::METHODS,
                 )
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+                .body(Body::empty())
+                .expect("Couldn't create a valid response"),
+        );
+    }
+
+    if request.uri().path() == routes::dsn::PATH {
+        return Some(
+            Response::builder()
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::dsn::METHODS)
                 .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
                 .body(Body::empty())
                 .expect("Couldn't create a valid response"),
