@@ -496,7 +496,8 @@ async fn websocket_handler(
                         .expect("Cannot send message");
                 }
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("[Websocket][ERROR] {}", e);
+                    sockets_clone.lock().await.remove(&id.as_u128());
                 }
             }
         }
