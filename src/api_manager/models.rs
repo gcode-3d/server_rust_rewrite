@@ -338,6 +338,9 @@ pub struct StateWrapper {
 #[derive(Debug, Clone)]
 pub enum StateDescription {
     None,
+    Capability {
+        capabilities: Vec<String>,
+    },
     Error {
         message: String,
     },

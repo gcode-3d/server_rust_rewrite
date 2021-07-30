@@ -227,6 +227,8 @@ impl Bridge {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
             let mut cap_data: Vec<String> = vec![];
+            let mut has_collected_capabilities = false;
+            let mut commands_left_to_send: Vec<String> = vec![];
 
             let cloned_dist = distributor.clone();
             loop {
@@ -248,6 +250,46 @@ impl Bridge {
                                     );
                                     break;
                                 }
+                                if has_collected_capabilities && collected.starts_with("ok") {
+                                    parser::parse_line(
+                                        &distributor,
+                                        &collected,
+                                        state.lock().unwrap().clone(),
+                                        print_info.clone(),
+                                    );
+                                    collected = String::new();
+
+                                    if commands_left_to_send.len() == 0 {
+                                        *state.lock().unwrap() = BridgeState::CONNECTED;
+
+                                        distributor
+                                            .send(EventInfo {
+                                                event_type: EventType::Bridge(
+                                                    BridgeEvents::StateUpdate {
+                                                        state: BridgeState::CONNECTED,
+                                                        description: api_manager::models::StateDescription::Capability {
+                                                            capabilities: cap_data.clone()
+                                                        },
+                                                    },
+                                                ),
+                                            })
+                                            .expect("Cannot send state update message");
+                                        continue;
+                                    }
+
+                                    let command = commands_left_to_send.pop().unwrap();
+                                    distributor
+                                        .send(EventInfo {
+                                            event_type: EventType::Bridge(
+                                                BridgeEvents::TerminalSend {
+                                                    message: command.clone(),
+                                                },
+                                            ),
+                                        })
+                                        .expect("Cannot send websocket message");
+
+                                    continue;
+                                }
                                 if collected.starts_with("ok") {
                                     if cap_data.len() == 0 {
                                         continue;
@@ -256,22 +298,39 @@ impl Bridge {
                                         cap_data = vec![];
                                         incoming.write(b"M115\n").expect("Cannot resend M115.");
                                     } else {
-                                        *state.lock().unwrap() = BridgeState::CONNECTED;
                                         for cap in &cap_data {
-                                            println!("[BRIDGE][CAP] => {}", cap);
+                                            // println!("[BRIDGE][CAP] => {}", cap);
+
+                                            if cap.contains("Cap:AUTOREPORT_TEMP:1") {
+                                                commands_left_to_send.push("M155 S2".to_string());
+                                            } else {
+                                                // TODO: ADD TEMP REPORTING.
+                                                // let is_canceled = canceled.clone();
+                                                // spawn(async move {
+                                                //     loop {
+                                                //         if *is_canceled.lock().unwrap() {
+                                                //             break;
+                                                //         }
+                                                //         std::thread::sleep(Duration::from_secs(2));
+                                                //     }
+                                                // });
+                                            }
+                                            if cap.contains("Cap:EEPROM:1") {
+                                                commands_left_to_send.push("M501".to_string())
+                                            }
                                         }
-                                        cap_data.push(collected);
-                                        timeout.abort();
                                         distributor
                                             .send(EventInfo {
                                                 event_type: EventType::Bridge(
-                                                    BridgeEvents::StateUpdate {
-                                                        state: BridgeState::CONNECTED,
-                                                        description: api_manager::models::StateDescription::None,
+                                                    BridgeEvents::TerminalSend {
+                                                        message: "G90".to_string(),
                                                     },
                                                 ),
                                             })
-                                            .expect("Cannot send state update message");
+                                            .expect("Cannot send websocket message");
+
+                                        cap_data.push(collected);
+                                        has_collected_capabilities = true;
                                     }
                                 } else {
                                     cap_data.push(collected);
