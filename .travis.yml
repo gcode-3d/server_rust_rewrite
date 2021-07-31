@@ -5,18 +5,15 @@ language: rust
 rust: 
   - stable
 cache: cargo
-script:
-  - cargo build --verbose --release
-  
 jobs:
   include:
   - arch: amd64
     script:
-    - cargo build --verbose --release
+    - cargo build  --release
     before_deploy:
     - git config --local user.name "Gcode 3d"
     - git config --local user.email "tobias.feld@hotmail.com"
-    - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
+    - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Yh%m%d%H%M%S')-$(git log --format=%h -1)}
     - git tag $TRAVIS_TAG
     deploy:
       provider: releases
@@ -27,7 +24,7 @@ jobs:
       skip_cleanup: true
   - arch: arm64
     script:
-    - cargo build --verbose --release
+    - cargo build  --release
     before_deploy:
     - git config --local user.name "Gcode 3d"
     - git config --local user.email "tobias.feld@hotmail.com"
