@@ -1,0 +1,39 @@
+os: linux
+compiler: gcc
+dist: xenial
+language: rust
+rust: 
+  - stable
+cache: cargo
+jobs:
+  include:
+  - arch: amd64
+    script:
+    - cargo build  --release
+    before_deploy:
+    - git config --local user.name "Gcode 3d"
+    - git config --local user.email "tobias.feld@hotmail.com"
+    - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Yh%m%d%H%M%S')-$(git log --format=%h -1)}
+    - git tag $TRAVIS_TAG
+    deploy:
+      provider: releases
+      token: $GHTOKEN
+      file: "./dist.zip"
+      prerelease: true
+      cleanup: false
+      skip_cleanup: true
+  - arch: arm64
+    script:
+    - cargo build  --release
+    before_deploy:
+    - git config --local user.name "Gcode 3d"
+    - git config --local user.email "tobias.feld@hotmail.com"
+    - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
+    - git tag $TRAVIS_TAG
+    deploy:
+      provider: releases
+      token: $GHTOKEN
+      file: "./dist.zip"
+      prerelease: true
+      cleanup: false
+      skip_cleanup: true
