@@ -7,7 +7,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use serialport;
-use tokio::spawn;
+use tokio::{spawn, task};
 
 use crate::{
     api_manager::{
@@ -96,7 +96,7 @@ impl Bridge {
         }
         let distributor = self.distibutor.clone();
         let state = self.state.clone();
-        spawn(async move {
+        task::spawn_blocking(|| async move {
             sleep(Duration::from_secs(10));
             if *state.lock().unwrap() == BridgeState::CONNECTING {
                 distributor
@@ -124,7 +124,7 @@ impl Bridge {
         let distributor = self.distibutor.clone();
         let current_state = self.state.clone();
         let canceled = is_canceled.clone();
-        spawn(async move {
+        task::spawn_blocking(|| async move {
             let mut outgoing = outgoing_for_listener;
             println!(
                 "[Bridge] connected to port {} with {} baudrate",
@@ -223,7 +223,7 @@ impl Bridge {
         let print_info = self.print_info.clone();
         let state = self.state.clone();
         let canceled = is_canceled.clone();
-        spawn(async move {
+        task::spawn_blocking(|| async move {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
             let mut cap_data: Vec<String> = vec![];
@@ -240,6 +240,8 @@ impl Bridge {
                         let data = String::from_utf8_lossy(&serial_buf[..t]);
                         let string = data.into_owned();
                         if string == "\n" {
+                            println!("=> {}", collected);
+
                             if state.lock().unwrap().eq(&BridgeState::CONNECTING) {
                                 if collected.to_lowercase().starts_with("error") {
                                     parser::parse_line(

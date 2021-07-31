@@ -37,7 +37,7 @@ use hyper_tungstenite::{
 use serde_json::{json, Value};
 use sqlx::{Connection, SqliteConnection};
 use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc};
-use tokio::{spawn, sync::Mutex};
+use tokio::{spawn, sync::Mutex, task::spawn_blocking};
 use uuid::Uuid;
 
 pub struct ApiManager {}
@@ -171,7 +171,7 @@ async fn router(
 
         match hyper_tungstenite::upgrade(req, None) {
             Ok((mut response, websocket)) => {
-                spawn(async move {
+                spawn_blocking(|| async move {
                     if let Err(e) = websocket_handler(
                         websocket.await.expect("[WS] Handshake failure"),
                         user,
@@ -267,7 +267,7 @@ async fn websocket_handler(
     /*
         Setup a receiver reader for the global event channel.
     */
-    spawn(async move {
+    spawn_blocking(|| async move {
         while let Some(event) = receiver.iter().next() {
             match event.event_type {
                 models::EventType::Websocket(models::WebsocketEvents::TempUpdate {
@@ -440,10 +440,11 @@ async fn websocket_handler(
     });
     let outgoing_clone = outgoing.clone();
     let sockets_clone = sockets.clone();
+
     /*
         Read incoming messages from the websocket connection.
     */
-    spawn(async move {
+    spawn_blocking(move || async move {
         while let Some(result) = incoming.next().await {
             match result {
                 Ok(message) => {
@@ -507,7 +508,7 @@ async fn websocket_handler(
     /*
         Read messages coming from the local_sender pushed into the hashmap.
     */
-    spawn(async move {
+    spawn_blocking(|| async move {
         while let Some(message) = local_receiver.iter().next() {
             outgoing_clone
                 .lock()

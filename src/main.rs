@@ -54,7 +54,7 @@ impl Manager {
         let (ws_sender, ws_receiver) = unbounded();
         let (bridge_sender, bridge_receiver) = unbounded();
         self.api_thread = Some(spawn_blocking(move || {
-            let _ = spawn(ApiManager::start(dist_sender_clone, ws_receiver));
+            let _ = spawn_blocking(move || ApiManager::start(dist_sender_clone, ws_receiver));
         }));
 
         for event in dist_receiver.iter() {
