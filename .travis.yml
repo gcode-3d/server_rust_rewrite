@@ -11,8 +11,6 @@ jobs:
     arch: amd64
     script:
     - cargo build  --release
-    - mkdir release
-    - cp ./target/release/server_v2 ./release/build_x86_64
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
@@ -30,8 +28,6 @@ jobs:
     arch: arm64
     script:
     - cargo build  --release
-    - mkdir release
-    - cp ./target/release/server_v2 ./release/build_arm64
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
