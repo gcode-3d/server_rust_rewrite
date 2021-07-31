@@ -23,6 +23,8 @@ jobs:
       bucket: gcode3d
       upload_dir: /builds/x86-64/$TRAVIS_TAG
       local_dir: ./release
+      cleanup: false
+      edge: true
 
   - 
     arch: arm64
@@ -40,3 +42,5 @@ jobs:
       bucket: gcode3d
       upload_dir: /builds/arm/$TRAVIS_TAG
       local_dir: ./release
+      cleanup: false
+      edge: true
