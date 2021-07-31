@@ -25,6 +25,7 @@ jobs:
       local_dir: ./release
       cleanup: false
       edge: true
+      acl: public-read
 
   - 
     arch: arm64
@@ -44,3 +45,5 @@ jobs:
       local_dir: ./release
       cleanup: false
       edge: true
+      acl: public-read
+
