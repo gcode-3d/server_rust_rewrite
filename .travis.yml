@@ -38,7 +38,7 @@ jobs:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
     - cp ./target/release/server_v2 ./release/$TRAVIS_TAG/server
-      after_deploy:
+    after_deploy:
       - echo "https://storage.googleapis.com/gcode3d/builds/arm/$TRAVIS_TAG/server_v2"
 
     deploy:
