@@ -14,10 +14,7 @@ jobs:
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
-    - ls .
-    - ls ./target
-    - ls ./target/release
-    - cp ./target/release/server_v2 ./release/build_x86_64
+    - cp ./target/release/server_v2 ./release
   
     deploy:
       provider: gcs
@@ -37,7 +34,7 @@ jobs:
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
-    - cp ./target/release/server_v2 ./release/build_arm64
+    - cp ./target/release/server_v2 ./release
   
     deploy:
       provider: gcs
