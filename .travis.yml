@@ -14,14 +14,14 @@ jobs:
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
-    - cp ./target/release/server_v2 ./release
+    - cp ./target/release/server_v2 ./release/$TRAVIS_TAG
   
     deploy:
       provider: gcs
       access_key_id: $GCS_ID
       secret_access_key: $GCS_KEY
       bucket: gcode3d
-      upload_dir: builds/x86-64/$TRAVIS_TAG
+      upload_dir: builds/x86-64/
       local_dir: ./release
       cleanup: false
       edge: true
@@ -34,14 +34,14 @@ jobs:
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
-    - cp ./target/release/server_v2 ./release
+    - cp ./target/release/server_v2 ./release/$TRAVIS_TAG
   
     deploy:
       provider: gcs
       access_key_id: $GCS_ID
       secret_access_key: $GCS_KEY
       bucket: gcode3d
-      upload_dir: builds/arm/$TRAVIS_TAG
+      upload_dir: builds/arm/
       local_dir: ./release
       cleanup: false
       edge: true
