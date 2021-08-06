@@ -1,2 +1,2 @@
 [target.armv7-unknown-linux-gnueabihf]
-linker = "gcc-8-multilib-arm-linux-gnueabihf"
+rustflags = ["-C", "gcc-8-multilib-arm-linux-gnueabihf"]
