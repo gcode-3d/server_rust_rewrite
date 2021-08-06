@@ -63,6 +63,7 @@ jobs:
     - sudo dpkg --add-architecture armhf
     - sudo apt-get update -yq
     - sudo apt install pkg-config
+    - sudo apt install libssl-dev
     - rustup target add armv7-unknown-linux-gnueabihf
     - |-
       sudo apt-get -yq install \
