@@ -62,8 +62,8 @@ jobs:
     before_install:
     - sudo dpkg --add-architecture armhf
     - sudo apt-get update -yq
-    - sudo apt install libssl-dev
-    - sudo apt install arm-linux-gnueabihf-gcc
+    - sudo apt-get install -y libssl-dev
+    - sudo apt-get install -y curl git build-essential
     - rustup target add armv7-unknown-linux-gnueabihf
     - cargo install cross
     env: TARGET=armv7-unknown-linux-gnueabihf
