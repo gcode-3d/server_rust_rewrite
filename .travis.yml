@@ -29,7 +29,7 @@ jobs:
       acl: public-read
 
     after_deploy:
-      - echo "https://storage.googleapis.com/gcode3d/builds/x86-64/$TRAVIS_TAG/server_v2"
+      - echo "https://storage.googleapis.com/gcode3d/builds/x86-64/$TRAVIS_TAG/server"
 
   - 
     arch: arm64
@@ -41,16 +41,45 @@ jobs:
     - mkdir ./release/$TRAVIS_TAG
     - cp ./target/release/server_v2 ./release/$TRAVIS_TAG/server
     after_deploy:
-      - echo "https://storage.googleapis.com/gcode3d/builds/arm/$TRAVIS_TAG/server_v2"
+      - echo "https://storage.googleapis.com/gcode3d/builds/arm64/$TRAVIS_TAG/server"
 
     deploy:
       provider: gcs
       access_key_id: $GCS_ID
       secret_access_key: $GCS_KEY
       bucket: gcode3d
-      upload_dir: builds/arm/
+      upload_dir: builds/arm64/
       local_dir: ./release
       cleanup: false
       edge: true
       acl: public-read
 
+  - 
+    arch: arm64
+    before_install:
+    - sudo dpkg --add-architecture armhf
+    - sudo apt-get update -yq
+    - |-
+      sudo apt-get -yq install \
+        crossbuild-essential-armhf \
+        libc6:armhf
+    script:
+    - cargo build  --release
+    before_deploy:
+    - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
+    - mkdir release
+    - mkdir ./release/$TRAVIS_TAG
+    - cp ./target/release/server_v2 ./release/$TRAVIS_TAG/server
+    after_deploy:
+      - echo "https://storage.googleapis.com/gcode3d/builds/arm32/$TRAVIS_TAG/server"
+
+    deploy:
+      provider: gcs
+      access_key_id: $GCS_ID
+      secret_access_key: $GCS_KEY
+      bucket: gcode3d
+      upload_dir: builds/arm32/
+      local_dir: ./release
+      cleanup: false
+      edge: true
+      acl: public-read
