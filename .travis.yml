@@ -8,6 +8,7 @@ cache: cargo
 jobs:
   include:
   - stage: Build
+    name: X86-64 Build
     arch: amd64
     script:
     - cargo build  --release
@@ -33,6 +34,7 @@ jobs:
 
   - 
     arch: arm64
+    name: ARM64 Build
     script:
     - cargo build  --release
     before_deploy:
@@ -56,6 +58,7 @@ jobs:
 
   - 
     arch: arm64
+    name: ARM32 Build
     before_install:
     - sudo dpkg --add-architecture armhf
     - sudo apt-get update -yq
