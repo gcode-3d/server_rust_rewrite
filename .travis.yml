@@ -67,7 +67,7 @@ jobs:
         crossbuild-essential-armhf \
         libc6:armhf
     script:
-    - cargo build  --release
+    - cargo build  --release --target=armv7-unknown-linux-gnueabihf
     before_deploy:
     - export TRAVIS_TAG=${TRAVIS_TAG:-$(date +'%Y%m%d%H%M%S')-$(git log --format=%h -1)}
     - mkdir release
