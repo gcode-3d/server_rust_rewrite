@@ -71,6 +71,7 @@ jobs:
       - TARGET=armv7-unknown-linux-gnueabihf
       - PKG_CONFIG_PATH="/usr/lib/arm-linux-gnueabihf/pkgconfig"
       - PKG_CONFIG_ALLOW_CROSS="true"
+      - OPENSSL_STATIC=1
     addons:
         apt:
           packages: *armhf
