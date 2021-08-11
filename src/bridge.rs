@@ -1,13 +1,11 @@
+use crossbeam_channel::{Receiver, Sender};
+use serialport;
 use std::{
     io::Write,
     sync::{Arc, Mutex},
-    thread::sleep,
     time::Duration,
 };
-
-use crossbeam_channel::{Receiver, Sender};
-use serialport;
-use tokio::spawn;
+use tokio::{spawn, task::yield_now, time::sleep};
 
 use crate::{
     api_manager::{
@@ -97,7 +95,7 @@ impl Bridge {
         let distributor = self.distibutor.clone();
         let state = self.state.clone();
         spawn(async move {
-            sleep(Duration::from_secs(10));
+            sleep(Duration::from_secs(10)).await;
             if *state.lock().unwrap() == BridgeState::CONNECTING {
                 distributor
                     .send(EventInfo {
@@ -131,90 +129,94 @@ impl Bridge {
                 outgoing.as_ref().name().unwrap_or("UNNAMED".to_string()),
                 outgoing.as_ref().baud_rate().unwrap()
             );
-
-            while let Some(event) = receiver.iter().next() {
-                match event.event_type {
-                    EventType::KILL => {
-                        drop(outgoing);
-                        *canceled.lock().unwrap() = true;
-                        break;
-                    }
-                    EventType::Bridge(BridgeEvents::TerminalSend { mut message }) => {
-                        if !message.ends_with("\n") {
-                            message = format!("{}\n", message);
+            loop {
+                if let Ok(event) = receiver.try_recv() {
+                    match event.event_type {
+                        EventType::KILL => {
+                            drop(outgoing);
+                            *canceled.lock().unwrap() = true;
+                            break;
                         }
-                        let result = outgoing.write(message.as_bytes());
-                        if result.is_err() {
-                            let err = result.unwrap_err();
-                            eprintln!("[BRIDGE][ERROR] {}", err);
+                        EventType::Bridge(BridgeEvents::TerminalSend { mut message }) => {
+                            if !message.ends_with("\n") {
+                                message = format!("{}\n", message);
+                            }
+                            let result = outgoing.write(message.as_bytes());
+                            if result.is_err() {
+                                let err = result.unwrap_err();
+                                eprintln!("[BRIDGE][ERROR] {}", err);
+                                distributor
+                                    .send(EventInfo {
+                                        event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                            state: BridgeState::ERRORED,
+                                            description:
+                                                api_manager::models::StateDescription::Error {
+                                                    message: err.to_string(),
+                                                },
+                                        }),
+                                    })
+                                    .expect("Cannot send message");
+                            }
+                        }
+                        EventType::Bridge(BridgeEvents::TerminalRead { message: _ }) => {}
+                        EventType::Bridge(BridgeEvents::PrintEnd) => {
+                            if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
+                                return ();
+                            }
+                            *print_info.lock().unwrap() = None;
                             distributor
                                 .send(EventInfo {
                                     event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                        state: BridgeState::ERRORED,
-                                        description: api_manager::models::StateDescription::Error {
-                                            message: err.to_string(),
-                                        },
+                                        state: BridgeState::CONNECTED,
+                                        description: api_manager::models::StateDescription::None,
                                     }),
                                 })
                                 .expect("Cannot send message");
                         }
-                    }
-                    EventType::Bridge(BridgeEvents::TerminalRead { message: _ }) => {}
-                    EventType::Bridge(BridgeEvents::PrintEnd) => {
-                        if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
-                            return ();
+                        EventType::Bridge(BridgeEvents::PrintStart { info }) => {
+                            if current_state.lock().unwrap().ne(&BridgeState::CONNECTED) {
+                                return ();
+                            }
+                            let mut guard = print_info.lock().unwrap();
+                            let filename = info.filename.clone();
+                            let progress = info.progress();
+                            let start = info.start.clone();
+                            let end = info.end.clone();
+
+                            *guard = Some(info);
+                            distributor
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                        state: BridgeState::PRINTING,
+                                        description: api_manager::models::StateDescription::Print {
+                                            filename,
+                                            progress,
+                                            start,
+                                            end,
+                                        },
+                                    }),
+                                })
+                                .expect("Cannot send message");
+
+                            distributor
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                                        message: "M110 N0".to_string(),
+                                    }),
+                                })
+                                .expect("Cannot send first line");
                         }
-                        *print_info.lock().unwrap() = None;
-                        distributor
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                    state: BridgeState::CONNECTED,
-                                    description: api_manager::models::StateDescription::None,
-                                }),
-                            })
-                            .expect("Cannot send message");
-                    }
-                    EventType::Bridge(BridgeEvents::PrintStart { info }) => {
-                        if current_state.lock().unwrap().ne(&BridgeState::CONNECTED) {
-                            return ();
+                        EventType::Bridge(BridgeEvents::StateUpdate {
+                            state,
+                            description: _,
+                        }) => {
+                            *current_state.lock().unwrap() = state;
                         }
-                        let mut guard = print_info.lock().unwrap();
-                        let filename = info.filename.clone();
-                        let progress = info.progress();
-                        let start = info.start.clone();
-                        let end = info.end.clone();
 
-                        *guard = Some(info);
-                        distributor
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                    state: BridgeState::PRINTING,
-                                    description: api_manager::models::StateDescription::Print {
-                                        filename,
-                                        progress,
-                                        start,
-                                        end,
-                                    },
-                                }),
-                            })
-                            .expect("Cannot send message");
-
-                        distributor
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(BridgeEvents::TerminalSend {
-                                    message: "M110 N0".to_string(),
-                                }),
-                            })
-                            .expect("Cannot send first line");
+                        _ => (),
                     }
-                    EventType::Bridge(BridgeEvents::StateUpdate {
-                        state,
-                        description: _,
-                    }) => {
-                        *current_state.lock().unwrap() = state;
-                    }
-
-                    _ => (),
+                } else {
+                    yield_now().await;
                 }
             }
         });
@@ -354,6 +356,8 @@ impl Bridge {
                         std::io::ErrorKind::TimedOut => {
                             if *is_canceled.lock().unwrap() {
                                 break;
+                            } else {
+                                yield_now().await;
                             }
                         }
                         _ => {

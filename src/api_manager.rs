@@ -17,7 +17,7 @@ use self::{
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::{sink::SinkExt, stream::StreamExt, FutureExt};
 use hyper::{
     header::{self, HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN},
     upgrade::Upgraded,
@@ -37,7 +37,7 @@ use hyper_tungstenite::{
 use serde_json::{json, Value};
 use sqlx::{Connection, SqliteConnection};
 use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc};
-use tokio::{spawn, sync::Mutex};
+use tokio::{spawn, sync::Mutex, task::yield_now};
 use uuid::Uuid;
 
 pub struct ApiManager {}
@@ -268,173 +268,181 @@ async fn websocket_handler(
         Setup a receiver reader for the global event channel.
     */
     spawn(async move {
-        while let Some(event) = receiver.iter().next() {
-            match event.event_type {
-                models::EventType::Websocket(models::WebsocketEvents::TempUpdate {
-                    tools,
-                    bed,
-                    chamber,
-                }) => {
-                    let json = json!({
-                        "type": "temperature_change",
-                        "content": {
-                            "tools": tools,
-                            "bed": bed,
-                            "chamber": chamber,
-                            "time": Utc::now().timestamp_millis()
-                        },
-                    });
-                    for sender in sockets_clone.lock().await.iter() {
-                        sender
-                            .1
-                            .send(json.to_string())
-                            .expect("Cannot send message");
-                    }
-                }
-                models::EventType::Websocket(models::WebsocketEvents::TerminalRead { message }) => {
-                    let time: DateTime<Utc> = Utc::now();
-                    let json = json!({
-                        "type": "terminal_message",
-                        "content": [
-                            {
-                                "message": message,
-                                "type": "OUTPUT",
-                                "id": null,
-                                "time": time.to_rfc3339()
-                            }
-                        ]
-                    });
-                    for sender in sockets_clone.lock().await.iter() {
-                        let result = sender.1.send(json.to_string());
-                        if result.is_err() {
-                            sockets_clone.lock().await.remove(sender.0);
+        loop {
+            if let Ok(event) = receiver.try_recv() {
+                match event.event_type {
+                    models::EventType::Websocket(models::WebsocketEvents::TempUpdate {
+                        tools,
+                        bed,
+                        chamber,
+                    }) => {
+                        let json = json!({
+                            "type": "temperature_change",
+                            "content": {
+                                "tools": tools,
+                                "bed": bed,
+                                "chamber": chamber,
+                                "time": Utc::now().timestamp_millis()
+                            },
+                        });
+                        for sender in sockets_clone.lock().await.iter() {
+                            sender
+                                .1
+                                .send(json.to_string())
+                                .expect("Cannot send message");
                         }
                     }
-                }
-                models::EventType::Websocket(models::WebsocketEvents::TerminalSend { message }) => {
-                    let time: DateTime<Utc> = Utc::now();
-                    let json = json!({
-                        "type": "terminal_message",
-                        "content": [
-                            {
-                                "message": message,
-                                "type": "INPUT",
-                                "id": null,
-                                "time": time.to_rfc3339()
-                            }
-                        ]
-                    });
-                    for sender in sockets_clone.lock().await.iter() {
-                        sender
-                            .1
-                            .send(json.to_string())
-                            .expect("Cannot send message");
-                    }
-                }
-
-                models::EventType::Websocket(models::WebsocketEvents::StateUpdate {
-                    state,
-                    description,
-                }) => {
-                    *current_state.lock().await = StateWrapper {
-                        state,
-                        description: description.clone(),
-                    };
-                    let json = match state {
-                        BridgeState::DISCONNECTED => json!({
-                            "type": "state_update",
-                            "content": {
-                                "state": "Disconnected",
-                                "description": serde_json::Value::Null
-                            }
-                        })
-                        .to_string(),
-                        BridgeState::CONNECTING => json!({
-                            "type": "state_update",
-                            "content": {
-                                "state": "Connecting",
-                                "description": serde_json::Value::Null
-                            }
-                        })
-                        .to_string(),
-                        BridgeState::CONNECTED => json!({
-                            "type": "state_update",
-                            "content": {
-                                "state": "Connected",
-                                "description": serde_json::Value::Null
-                            }
-                        })
-                        .to_string(),
-                        BridgeState::ERRORED => match description {
-                            models::StateDescription::Error { message } => json!({
-                                "type": "state_update",
-                                "content": {
-                                    "state": "Errored",
-                                    "description": {
-                                        "errorDescription": message
-                                    }
+                    models::EventType::Websocket(models::WebsocketEvents::TerminalRead {
+                        message,
+                    }) => {
+                        let time: DateTime<Utc> = Utc::now();
+                        let json = json!({
+                            "type": "terminal_message",
+                            "content": [
+                                {
+                                    "message": message,
+                                    "type": "OUTPUT",
+                                    "id": null,
+                                    "time": time.to_rfc3339()
                                 }
-                            })
-                            .to_string(),
-                            _ => json!({
+                            ]
+                        });
+                        for sender in sockets_clone.lock().await.iter() {
+                            let result = sender.1.send(json.to_string());
+                            if result.is_err() {
+                                sockets_clone.lock().await.remove(sender.0);
+                            }
+                        }
+                    }
+                    models::EventType::Websocket(models::WebsocketEvents::TerminalSend {
+                        message,
+                    }) => {
+                        let time: DateTime<Utc> = Utc::now();
+                        let json = json!({
+                            "type": "terminal_message",
+                            "content": [
+                                {
+                                    "message": message,
+                                    "type": "INPUT",
+                                    "id": null,
+                                    "time": time.to_rfc3339()
+                                }
+                            ]
+                        });
+                        for sender in sockets_clone.lock().await.iter() {
+                            sender
+                                .1
+                                .send(json.to_string())
+                                .expect("Cannot send message");
+                        }
+                    }
+
+                    models::EventType::Websocket(models::WebsocketEvents::StateUpdate {
+                        state,
+                        description,
+                    }) => {
+                        *current_state.lock().await = StateWrapper {
+                            state,
+                            description: description.clone(),
+                        };
+                        let json = match state {
+                            BridgeState::DISCONNECTED => json!({
                                 "type": "state_update",
                                 "content": {
-                                    "state": "Errored",
+                                    "state": "Disconnected",
                                     "description": serde_json::Value::Null
                                 }
                             })
                             .to_string(),
-                        },
-                        BridgeState::PREPARING => todo!(),
-                        BridgeState::PRINTING => match description {
-                            models::StateDescription::Print {
-                                filename,
-                                progress,
-                                start,
-                                end,
-                            } => {
-                                let mut end_string: Option<String> = None;
-                                if end.is_some() {
-                                    end_string = Some(end.unwrap().to_rfc3339());
+                            BridgeState::CONNECTING => json!({
+                                "type": "state_update",
+                                "content": {
+                                    "state": "Connecting",
+                                    "description": serde_json::Value::Null
                                 }
-                                json!({
+                            })
+                            .to_string(),
+                            BridgeState::CONNECTED => json!({
+                                "type": "state_update",
+                                "content": {
+                                    "state": "Connected",
+                                    "description": serde_json::Value::Null
+                                }
+                            })
+                            .to_string(),
+                            BridgeState::ERRORED => match description {
+                                models::StateDescription::Error { message } => json!({
                                     "type": "state_update",
                                     "content": {
-                                        "state": "Printing",
+                                        "state": "Errored",
                                         "description": {
-                                            "printInfo": {
-                                                "file": {
-                                                    "name": filename,
-                                                },
-                                                "progress": format!("{:.2}", progress),
-                                                "startTime": start.to_rfc3339(),
-                                                "estEndTime": end_string
-                                            }
+                                            "errorDescription": message
                                         }
                                     }
                                 })
-                                .to_string()
-                            }
-                            _ => json!({
-                                "type": "state_update",
-                                "content": {
-                                    "state": "Printing",
-                                    "description": serde_json::Value::Null
+                                .to_string(),
+                                _ => json!({
+                                    "type": "state_update",
+                                    "content": {
+                                        "state": "Errored",
+                                        "description": serde_json::Value::Null
+                                    }
+                                })
+                                .to_string(),
+                            },
+                            BridgeState::PREPARING => todo!(),
+                            BridgeState::PRINTING => match description {
+                                models::StateDescription::Print {
+                                    filename,
+                                    progress,
+                                    start,
+                                    end,
+                                } => {
+                                    let mut end_string: Option<String> = None;
+                                    if end.is_some() {
+                                        end_string = Some(end.unwrap().to_rfc3339());
+                                    }
+                                    json!({
+                                        "type": "state_update",
+                                        "content": {
+                                            "state": "Printing",
+                                            "description": {
+                                                "printInfo": {
+                                                    "file": {
+                                                        "name": filename,
+                                                    },
+                                                    "progress": format!("{:.2}", progress),
+                                                    "startTime": start.to_rfc3339(),
+                                                    "estEndTime": end_string
+                                                }
+                                            }
+                                        }
+                                    })
+                                    .to_string()
                                 }
-                            })
-                            .to_string(),
-                        },
-                        BridgeState::FINISHING => todo!(),
-                    };
-                    for sender in sockets_clone.lock().await.iter() {
-                        sender
-                            .1
-                            .send(json.to_string())
-                            .expect("Cannot send message");
+                                _ => json!({
+                                    "type": "state_update",
+                                    "content": {
+                                        "state": "Printing",
+                                        "description": serde_json::Value::Null
+                                    }
+                                })
+                                .to_string(),
+                            },
+                            BridgeState::FINISHING => todo!(),
+                        };
+                        for sender in sockets_clone.lock().await.iter() {
+                            sender
+                                .1
+                                .send(json.to_string())
+                                .expect("Cannot send message");
+                        }
                     }
+                    EventType::Bridge(_) => todo!(),
+                    EventType::KILL => (),
                 }
-                EventType::Bridge(_) => todo!(),
-                EventType::KILL => (),
+            } else {
+                yield_now().await;
             }
         }
     });
@@ -444,61 +452,71 @@ async fn websocket_handler(
         Read incoming messages from the websocket connection.
     */
     spawn(async move {
-        while let Some(result) = incoming.next().await {
-            match result {
-                Ok(message) => {
-                    if message.is_close() {
-                        sockets_clone
-                            .lock()
-                            .await
-                            .remove(&id.as_u128())
-                            .expect("Cannot remove socket");
+        loop {
+            if let Some(result) = incoming.next().now_or_never() {
+                if result.is_none() {
+                    yield_now().await;
+                    continue;
+                }
+                let result = result.unwrap();
 
-                        let _ = outgoing_clone
-                            .lock()
-                            .await
-                            .send(Message::Close(Some(CloseFrame {
-                                code: CloseCode::Normal,
-                                reason: std::borrow::Cow::Borrowed(""),
-                            })))
-                            .await;
+                match result {
+                    Ok(message) => {
+                        if message.is_close() {
+                            sockets_clone
+                                .lock()
+                                .await
+                                .remove(&id.as_u128())
+                                .expect("Cannot remove socket");
 
-                        continue;
-                    }
-                    if message.is_ping() {
+                            let _ = outgoing_clone
+                                .lock()
+                                .await
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: CloseCode::Normal,
+                                    reason: std::borrow::Cow::Borrowed(""),
+                                })))
+                                .await;
+
+                            continue;
+                        }
+                        if message.is_ping() {
+                            outgoing_clone
+                                .lock()
+                                .await
+                                .send(Message::Pong(message.into_data()))
+                                .await
+                                .expect("Cannot send message");
+                            continue;
+                        }
+                        if message.is_text() == false {
+                            let _ = sockets_clone.lock().await.remove(&id.as_u128());
+                            outgoing_clone
+                                .lock()
+                                .await
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: CloseCode::Policy,
+                                    reason: std::borrow::Cow::Borrowed("Bad data"),
+                                })))
+                                .await
+                                .expect("Cannot send message");
+                            continue;
+                        }
+
                         outgoing_clone
                             .lock()
                             .await
-                            .send(Message::Pong(message.into_data()))
+                            .send(Message::text("Boop back!"))
                             .await
                             .expect("Cannot send message");
-                        continue;
                     }
-                    if message.is_text() == false {
-                        let _ = sockets_clone.lock().await.remove(&id.as_u128());
-                        outgoing_clone
-                            .lock()
-                            .await
-                            .send(Message::Close(Some(CloseFrame {
-                                code: CloseCode::Policy,
-                                reason: std::borrow::Cow::Borrowed("Bad data"),
-                            })))
-                            .await
-                            .expect("Cannot send message");
-                        continue;
+                    Err(e) => {
+                        eprintln!("[Websocket][ERROR] {}", e);
+                        sockets_clone.lock().await.remove(&id.as_u128());
                     }
-
-                    outgoing_clone
-                        .lock()
-                        .await
-                        .send(Message::text("Boop back!"))
-                        .await
-                        .expect("Cannot send message");
                 }
-                Err(e) => {
-                    eprintln!("[Websocket][ERROR] {}", e);
-                    sockets_clone.lock().await.remove(&id.as_u128());
-                }
+            } else {
+                yield_now().await;
             }
         }
     });
@@ -508,13 +526,18 @@ async fn websocket_handler(
         Read messages coming from the local_sender pushed into the hashmap.
     */
     spawn(async move {
-        while let Some(message) = local_receiver.iter().next() {
-            outgoing_clone
-                .lock()
-                .await
-                .send(Message::text(message))
-                .await
-                .expect("Cannot send message");
+        loop {
+
+            if let Ok(message) = local_receiver.try_recv() {
+                outgoing_clone
+                    .lock()
+                    .await
+                    .send(Message::text(message))
+                    .await
+                    .expect("Cannot send message");
+            } else {
+                yield_now().await;
+            }
         }
     });
 

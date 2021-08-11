@@ -10,7 +10,7 @@ use sqlx::{Connection, Executor, SqliteConnection};
 use tokio::{
     fs::OpenOptions,
     spawn,
-    task::{spawn_blocking, JoinHandle},
+    task::{yield_now, JoinHandle},
 };
 mod api_manager;
 mod bridge;
@@ -36,14 +36,12 @@ async fn main() {
 
 struct Manager {
     bridge_thread: Option<JoinHandle<()>>,
-    api_thread: Option<JoinHandle<()>>,
 }
 
 impl Manager {
     fn new() -> Self {
         Self {
             bridge_thread: None,
-            api_thread: None,
         }
     }
 
@@ -53,156 +51,167 @@ impl Manager {
         let dist_sender_clone = dist_sender.clone();
         let (ws_sender, ws_receiver) = unbounded();
         let (bridge_sender, bridge_receiver) = unbounded();
-        self.api_thread = Some(spawn_blocking(move || {
+        spawn(async move {
             let _ = spawn(ApiManager::start(dist_sender_clone, ws_receiver));
-        }));
+        });
+        loop {
+            if let Ok(event) = dist_receiver.try_recv() {
+                match event.event_type {
+                    EventType::Bridge(api_manager::models::BridgeEvents::ConnectionCreate {
+                        address,
+                        port,
+                    }) => {
+                        println!(
+                            "[MAIN] Creating new bridge instance: {}:{}",
+                            &address, &port
+                        );
+                        if self.bridge_thread.is_some() {
+                            panic!("Created connection before old connection was terminated");
+                            // continue;
+                        }
 
-        for event in dist_receiver.iter() {
-            match event.event_type {
-                EventType::Bridge(api_manager::models::BridgeEvents::ConnectionCreate {
-                    address,
-                    port,
-                }) => {
-                    println!(
-                        "[MAIN] Creating new bridge instance: {}:{}",
-                        &address, &port
-                    );
-                    if self.bridge_thread.is_some() {
-                        panic!("Created connection before old connection was terminated");
-                        // continue;
+                        let dist_sender_clone = dist_sender.clone();
+                        let bridge_receiver_clone = bridge_receiver.clone();
+                        self.bridge_thread = Some(spawn(async move {
+                            let mut bridge = Bridge::new(
+                                dist_sender_clone,
+                                bridge_receiver_clone,
+                                address,
+                                port,
+                            );
+                            bridge.start();
+                        }));
                     }
+                    EventType::Bridge(
+                        api_manager::models::BridgeEvents::ConnectionCreateError { error },
+                    ) => {
+                        eprintln!("[BRIDGE] Creating connection caused an error: {} ", error);
 
-                    let dist_sender_clone = dist_sender.clone();
-                    let bridge_receiver_clone = bridge_receiver.clone();
-                    self.bridge_thread = Some(spawn_blocking(move || {
-                        let mut bridge =
-                            Bridge::new(dist_sender_clone, bridge_receiver_clone, address, port);
-                        bridge.start();
-                    }));
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::ConnectionCreateError {
-                    error,
-                }) => {
-                    eprintln!("[BRIDGE] Creating connection caused an error: {} ", error);
+                        dist_sender
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
+                                    state: bridge::BridgeState::ERRORED,
+                                    description: api_manager::models::StateDescription::Error {
+                                        message: error,
+                                    },
+                                }),
+                            })
+                            .expect("Cannot send message");
 
-                    dist_sender
-                        .send(EventInfo {
-                            event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                                state: bridge::BridgeState::ERRORED,
-                                description: api_manager::models::StateDescription::Error {
-                                    message: error,
-                                },
-                            }),
-                        })
-                        .expect("Cannot send message");
-
-                    if let Some(handle) = &self.bridge_thread {
-                        handle.abort();
-                        self.bridge_thread = None;
-                    } else {
-                        panic!("Connection error when thread was already closed.");
-                        // continue
+                        if let Some(handle) = &self.bridge_thread {
+                            handle.abort();
+                            self.bridge_thread = None;
+                        } else {
+                            panic!("Connection error when thread was already closed.");
+                            // continue
+                        }
                     }
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::TerminalRead { message }) => {
-                    println!("[Bridge] Received message: {}", message);
-                    // todo: Group messages in "chunks", to make interface updates better to handle.
+                    EventType::Bridge(api_manager::models::BridgeEvents::TerminalRead {
+                        message,
+                    }) => {
+                        println!("[Bridge] Received message: {}", message);
+                        // todo: Group messages in "chunks", to make interface updates better to handle.
 
-                    dist_sender
-                        .send(EventInfo {
-                            event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
-                                message,
-                            }),
-                        })
-                        .expect("Cannot send message");
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend { message }) => {
-                    if self.bridge_thread.is_none() {
-                        continue;
+                        dist_sender
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
+                                    message,
+                                }),
+                            })
+                            .expect("Cannot send message");
                     }
-                    bridge_sender
-                        .send(EventInfo {
-                            event_type: EventType::Bridge(
-                                api_manager::models::BridgeEvents::TerminalSend {
-                                    message: message.clone(),
-                                },
-                            ),
-                        })
-                        .expect("Cannot send message");
-                    dist_sender
-                        .send(EventInfo {
-                            event_type: EventType::Websocket(WebsocketEvents::TerminalSend {
-                                message,
-                            }),
-                        })
-                        .expect("Cannot send message");
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd) => {
-                    bridge_sender
-                        .send(EventInfo {
-                            event_type: EventType::Bridge(
-                                api_manager::models::BridgeEvents::PrintEnd,
-                            ),
-                        })
-                        .expect("Cannot send message");
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::PrintStart { info }) => {
-                    if self.bridge_thread.is_none() {
-                        continue;
-                    }
-                    bridge_sender
-                        .send(EventInfo {
-                            event_type: EventType::Bridge(
-                                api_manager::models::BridgeEvents::PrintStart { info },
-                            ),
-                        })
-                        .expect("Cannot send message");
-                }
-                EventType::Bridge(api_manager::models::BridgeEvents::StateUpdate {
-                    state,
-                    description,
-                }) => {
-                    if self.bridge_thread.is_none() {
-                        continue;
-                    }
-
-                    if state == BridgeState::DISCONNECTED || state == BridgeState::ERRORED {
-                        let _ = bridge_sender.send(EventInfo {
-                            event_type: EventType::KILL,
-                        });
-                        self.bridge_thread.take();
-                    } else {
+                    EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend {
+                        message,
+                    }) => {
+                        if self.bridge_thread.is_none() {
+                            continue;
+                        }
                         bridge_sender
                             .send(EventInfo {
                                 event_type: EventType::Bridge(
-                                    api_manager::models::BridgeEvents::StateUpdate {
-                                        state: state.clone(),
-                                        description: description.clone(),
+                                    api_manager::models::BridgeEvents::TerminalSend {
+                                        message: message.clone(),
+                                    },
+                                ),
+                            })
+                            .expect("Cannot send message");
+                        dist_sender
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(WebsocketEvents::TerminalSend {
+                                    message,
+                                }),
+                            })
+                            .expect("Cannot send message");
+                    }
+                    EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd) => {
+                        bridge_sender
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(
+                                    api_manager::models::BridgeEvents::PrintEnd,
+                                ),
+                            })
+                            .expect("Cannot send message");
+                    }
+                    EventType::Bridge(api_manager::models::BridgeEvents::PrintStart { info }) => {
+                        if self.bridge_thread.is_none() {
+                            continue;
+                        }
+                        bridge_sender
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(
+                                    api_manager::models::BridgeEvents::PrintStart { info },
+                                ),
+                            })
+                            .expect("Cannot send message");
+                    }
+                    EventType::Bridge(api_manager::models::BridgeEvents::StateUpdate {
+                        state,
+                        description,
+                    }) => {
+                        if self.bridge_thread.is_none() {
+                            continue;
+                        }
+
+                        if state == BridgeState::DISCONNECTED || state == BridgeState::ERRORED {
+                            let _ = bridge_sender.send(EventInfo {
+                                event_type: EventType::KILL,
+                            });
+                            self.bridge_thread.take();
+                        } else {
+                            bridge_sender
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(
+                                        api_manager::models::BridgeEvents::StateUpdate {
+                                            state: state.clone(),
+                                            description: description.clone(),
+                                        },
+                                    ),
+                                })
+                                .expect("Cannot send message");
+                        }
+
+                        dist_sender
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(
+                                    api_manager::models::WebsocketEvents::StateUpdate {
+                                        state,
+                                        description,
                                     },
                                 ),
                             })
                             .expect("Cannot send message");
                     }
-
-                    dist_sender
-                        .send(EventInfo {
-                            event_type: EventType::Websocket(
-                                api_manager::models::WebsocketEvents::StateUpdate {
-                                    state,
-                                    description,
-                                },
-                            ),
-                        })
-                        .expect("Cannot send message");
+                    EventType::Websocket(ws_event) => {
+                        ws_sender
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(ws_event),
+                            })
+                            .expect("Failed to send message to websocket");
+                    }
+                    _ => (),
                 }
-                EventType::Websocket(ws_event) => {
-                    ws_sender
-                        .send(EventInfo {
-                            event_type: EventType::Websocket(ws_event),
-                        })
-                        .expect("Failed to send message to websocket");
-                }
-                _ => (),
+            } else {
+                yield_now().await;
             }
         }
     }
