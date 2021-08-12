@@ -34,7 +34,6 @@ pub async fn handler(_request: Request<Body>) -> Response<Body> {
                         let size = metadata.len();
                         let row = json!({
                                 "name": file.file_name().to_string_lossy(),
-                                "uploaded": "test",
                                 "uploaded": date,
                                 "size": size
                         })
@@ -61,7 +60,7 @@ pub async fn handler(_request: Request<Body>) -> Response<Body> {
             header::ACCESS_CONTROL_ALLOW_HEADERS,
             "X-Requested-With,content-type, Authorization, X-force-upload",
         )
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, PUT")
+        .header(header::ACCESS_CONTROL_ALLOW_METHODS, METHODS)
         .body(Body::from(format!(
             "[{}]",
             json.chars().skip(1).collect::<String>()

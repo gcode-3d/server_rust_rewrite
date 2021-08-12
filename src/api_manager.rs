@@ -676,37 +676,106 @@ async fn handle_route(
     if request.method() == Method::GET && path.eq(routes::ping::PATH) {
         return routes::ping::handler(request);
     }
+
     if request.method().eq(&Method::POST) && path.eq(routes::login::PATH) {
         return routes::login::handler(request).await;
     }
-    if request.method().eq(&Method::GET) && path.eq(routes::list_settings::PATH) {
-        return routes::list_settings::handler(request).await;
-    }
-    if request.method().eq(&Method::POST) && path.eq(routes::update_settings::PATH) {
-        return routes::update_settings::handler(request).await;
-    }
-    if request.method().eq(&Method::GET) && path.eq(routes::list_files::PATH) {
-        return routes::list_files::handler(request).await;
-    }
-    if request.method().eq(&Method::POST) && path.eq(routes::upload_file::PATH) {
-        return routes::upload_file::handler(&mut request).await;
-    }
-    if request.method().eq(&Method::PUT) && path.eq(routes::create_connection::PATH) {
-        return routes::create_connection::handler(request, distributor).await;
-    }
-    if request.method().eq(&Method::DELETE) && path.eq(routes::disconnect_connection::PATH) {
-        return routes::disconnect_connection::handler(state.lock().await.state, distributor).await;
-    }
-    if request.method().eq(&Method::POST) && path.eq(routes::reconnect_connection::PATH) {
-        return routes::reconnect_connection::handler(state.lock().await.state, distributor).await;
-    }
-    if request.method().eq(&Method::PUT) && path.eq(routes::start_print::PATH) {
-        return routes::start_print::handler(request, distributor, state).await;
-    }
+
     if request.method().eq(&Method::GET) && path.eq(routes::dsn::PATH) {
         return routes::dsn::handler().await;
     }
+
+    // From this point authed routes only
+    let permissions = authenticate_route(&request).await;
+    if permissions.is_none() {
+        return unauthorized_response();
+    };
+    let permissions = permissions.unwrap();
+
+    if request.method().eq(&Method::GET) && path.eq(routes::list_settings::PATH) {
+        return routes::list_settings::handler().await;
+    }
+
+    if request.method().eq(&Method::POST) && path.eq(routes::update_settings::PATH) {
+        if !permissions.settings_edit() {
+            return unauthorized_response();
+        }
+        return routes::update_settings::handler(request).await;
+    }
+
+    if request.method().eq(&Method::GET) && path.eq(routes::list_files::PATH) {
+        if !permissions.file_access() {
+            return unauthorized_response();
+        }
+        return routes::list_files::handler(request).await;
+    }
+
+    if request.method().eq(&Method::POST) && path.eq(routes::upload_file::PATH) {
+        if !permissions.file_edit() || !permissions.file_access() {
+            return unauthorized_response();
+        }
+        return routes::upload_file::handler(&mut request).await;
+    }
+
+    if request.method().eq(&Method::PUT) && path.eq(routes::create_connection::PATH) {
+        if !permissions.edit_connection() {
+            return unauthorized_response();
+        }
+        return routes::create_connection::handler(request, distributor).await;
+    }
+
+    if request.method().eq(&Method::DELETE) && path.eq(routes::disconnect_connection::PATH) {
+        if !permissions.edit_connection() {
+            return unauthorized_response();
+        }
+        return routes::disconnect_connection::handler(state.lock().await.state, distributor).await;
+    }
+
+    if request.method().eq(&Method::POST) && path.eq(routes::reconnect_connection::PATH) {
+        if !permissions.edit_connection() {
+            return unauthorized_response();
+        }
+        return routes::reconnect_connection::handler(state.lock().await.state, distributor).await;
+    }
+
+    if request.method().eq(&Method::PUT) && path.eq(routes::start_print::PATH) {
+        if !permissions.print_state_edit() {
+            return unauthorized_response();
+        }
+        return routes::start_print::handler(request, distributor, state).await;
+    }
+
     return not_found_response();
+}
+
+async fn authenticate_route(request: &Request<Body>) -> Option<AuthPermissions> {
+    if !request.headers().contains_key("authorization") {
+        return None;
+    }
+
+    let token = request
+        .headers()
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .expect("Not a valid value");
+
+    if token.len() != 60 || !token.chars().all(char::is_alphanumeric) {
+        return None;
+    }
+    let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
+    let mut query = sqlx::query_as::<_, AuthPermissions>(
+                "select a.username as username, a.permissions as permissions from users a inner join tokens b on a.username = b.username where (b.expire < DATE('now') OR b.expire is null) AND b.token = ?",
+            );
+
+    query = query.bind(token);
+
+    let result = query.fetch_one(&mut connection).await;
+
+    if result.is_err() {
+        return None;
+    }
+    return Some(result.unwrap());
 }
 
 /*

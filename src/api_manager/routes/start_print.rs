@@ -10,15 +10,13 @@ use crossbeam_channel::Sender;
 use hyper::{body, header, Body, Request, Response};
 use serde::Deserialize;
 use serde_json::Value;
-use sqlx::{Connection, SqliteConnection};
 use tokio::sync::Mutex;
 
 use crate::{
     api_manager::{
-        models::{AuthPermissions, BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
+        models::{BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
         responses::{
             bad_request_response, forbidden_response, not_found_response, server_error_response,
-            unauthorized_response,
         },
     },
     bridge::BridgeState,
@@ -32,39 +30,6 @@ pub async fn handler(
     distributor: Sender<EventInfo>,
     state: Arc<Mutex<StateWrapper>>,
 ) -> Response<Body> {
-    let headers = req.headers().clone();
-
-    if !headers.contains_key("authorization") {
-        return unauthorized_response();
-    }
-    let token = headers
-        .get("authorization")
-        .unwrap()
-        .to_str()
-        .expect("Not a valid value");
-
-    if token.len() != 60 || !token.chars().all(char::is_alphanumeric) {
-        return unauthorized_response();
-    }
-
-    let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
-    let mut query = sqlx::query_as::<_, AuthPermissions>(
-									"select a.username as username, a.permissions as permissions from users a inner join tokens b on a.username = b.username where (b.expire < DATE('now') OR b.expire is null) AND b.token = ?",
-							);
-
-    query = query.bind(token);
-
-    let result = query.fetch_one(&mut connection).await;
-    if result.is_err() {
-        eprintln!("[API][PRINT] Error: {}", result.unwrap_err());
-        return bad_request_response();
-    }
-    let permissions = result.unwrap();
-
-    if !permissions.print_state_edit() {
-        return unauthorized_response();
-    }
-
     let result = body::to_bytes(req.body_mut()).await.unwrap();
     let body = match String::from_utf8(result.to_vec()) {
         Ok(body) => Some(body),

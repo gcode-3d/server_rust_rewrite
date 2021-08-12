@@ -2,27 +2,12 @@ use hyper::{body, header, Body, Request, Response};
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 
-use crate::api_manager::responses::{bad_request_response, unauthorized_response};
+use crate::api_manager::responses::bad_request_response;
 
 pub const PATH: &str = "/api/settings";
 pub const METHODS: &str = "GET, POST";
 
 pub async fn handler(mut req: Request<Body>) -> Response<Body> {
-    let headers = req.headers().clone();
-
-    if !headers.contains_key("authorization") {
-        return unauthorized_response();
-    }
-    let token = headers
-        .get("authorization")
-        .unwrap()
-        .to_str()
-        .expect("Not a valid value");
-
-    if token.len() != 60 || !token.chars().all(char::is_alphanumeric) {
-        return unauthorized_response();
-    }
-
     let result = body::to_bytes(req.body_mut()).await.unwrap();
     let body = match String::from_utf8(result.to_vec()) {
         Ok(body) => Some(body),
