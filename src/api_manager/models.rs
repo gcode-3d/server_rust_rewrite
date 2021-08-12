@@ -73,7 +73,7 @@ impl<'r> FromRow<'r, SqliteRow> for SettingRow {
         let mut float = None;
 
         if row_type == 1 {
-            if value == "1" {
+            if value == "1" || value == "true" {
                 bool = Some(true);
             } else {
                 bool = Some(false);
