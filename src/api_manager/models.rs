@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
+use uuid::Uuid;
 
 use crate::{bridge::BridgeState, parser::TempInfo};
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -231,6 +232,7 @@ pub enum WebsocketEvents {
     },
     TerminalSend {
         message: String,
+        id: Uuid,
     },
     TempUpdate {
         tools: Vec<TempInfo>,
@@ -252,11 +254,9 @@ pub enum BridgeEvents {
     ConnectionCreateError {
         error: String,
     },
-    TerminalRead {
-        message: String,
-    },
     TerminalSend {
         message: String,
+        id: Uuid,
     },
     StateUpdate {
         state: BridgeState,
@@ -350,4 +350,16 @@ pub enum StateDescription {
         start: DateTime<Utc>,
         end: Option<DateTime<Utc>>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub content: String,
+    pub id: Uuid,
+}
+
+impl Message {
+    pub fn new(content: String, id: Uuid) -> Self {
+        return Self { content, id };
+    }
 }

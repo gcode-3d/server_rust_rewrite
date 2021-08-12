@@ -118,22 +118,10 @@ impl Manager {
                             // continue
                         }
                     }
-                    EventType::Bridge(api_manager::models::BridgeEvents::TerminalRead {
-                        message,
-                    }) => {
-                        println!("[Bridge] Received message: {}", message);
-                        // todo: Group messages in "chunks", to make interface updates better to handle.
-
-                        dist_sender
-                            .send(EventInfo {
-                                event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
-                                    message,
-                                }),
-                            })
-                            .expect("Cannot send message");
-                    }
+                    
                     EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend {
                         message,
+                        id
                     }) => {
                         if self.bridge_thread.is_none() {
                             continue;
@@ -143,17 +131,12 @@ impl Manager {
                                 event_type: EventType::Bridge(
                                     api_manager::models::BridgeEvents::TerminalSend {
                                         message: message.clone(),
+                                        id: id.clone()
                                     },
                                 ),
                             })
                             .expect("Cannot send message");
-                        dist_sender
-                            .send(EventInfo {
-                                event_type: EventType::Websocket(WebsocketEvents::TerminalSend {
-                                    message,
-                                }),
-                            })
-                            .expect("Cannot send message");
+                        
                     }
                     EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd) => {
                         bridge_sender

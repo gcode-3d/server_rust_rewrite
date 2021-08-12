@@ -320,15 +320,16 @@ async fn websocket_handler(
                     }
                     models::EventType::Websocket(models::WebsocketEvents::TerminalSend {
                         message,
+                        id,
                     }) => {
                         let time: DateTime<Utc> = Utc::now();
                         let json = json!({
                             "type": "terminal_message",
                             "content": [
                                 {
-                                    "message": message,
+                                    "message": message.trim_end(),
                                     "type": "INPUT",
-                                    "id": null,
+                                    "id": id.to_hyphenated().to_string(),
                                     "time": time.to_rfc3339()
                                 }
                             ]
@@ -745,6 +746,13 @@ async fn handle_route(
         return routes::start_print::handler(request, distributor, state).await;
     }
 
+    if request.method().eq(&Method::POST) && path.eq(routes::terminal::PATH) {
+        if !permissions.terminal_send() {
+            return unauthorized_response();
+        }
+        return routes::terminal::handler(request, distributor, state.lock().await.state).await;
+    }
+
     return not_found_response();
 }
 
@@ -866,6 +874,17 @@ fn handle_option_requests(request: &Request<Body>) -> Response<Body> {
         return Response::builder()
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
             .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::dsn::METHODS)
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
+    }
+    if path == routes::terminal::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::terminal::METHODS,
+            )
             .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
             .body(Body::empty())
             .expect("Couldn't create a valid response");

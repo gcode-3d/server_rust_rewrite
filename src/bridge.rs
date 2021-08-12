@@ -1,11 +1,13 @@
 use crossbeam_channel::{Receiver, Sender};
 use serialport;
 use std::{
+    collections::VecDeque,
     io::Write,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{spawn, task::yield_now, time::sleep};
+use uuid::Uuid;
 
 use crate::{
     api_manager::{
@@ -13,7 +15,7 @@ use crate::{
         models::{
             BridgeEvents, EventInfo,
             EventType::{self},
-            PrintInfo, WebsocketEvents,
+            Message, PrintInfo, WebsocketEvents,
         },
     },
     bridge, parser,
@@ -38,6 +40,7 @@ pub struct Bridge {
     print_info: Arc<Mutex<Option<PrintInfo>>>,
     distibutor: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
+    message_queue: Arc<Mutex<VecDeque<Message>>>,
 }
 
 impl Bridge {
@@ -55,6 +58,7 @@ impl Bridge {
             print_info: Arc::new(Mutex::new(None)),
             distibutor,
             receiver,
+            message_queue: Arc::new(Mutex::new(VecDeque::new())),
         };
     }
 
@@ -124,6 +128,7 @@ impl Bridge {
 
         port.set_timeout(Duration::from_millis(10))
             .expect("Cannot set timeout on port");
+        let is_ready_for_input = Arc::new(Mutex::new(true));
         let mut incoming = port;
         let mut outgoing = incoming.try_clone().expect("Cannot clone serialport");
         let outgoing_for_listener = incoming.try_clone().expect("Cannot clone serialport");
@@ -132,6 +137,8 @@ impl Bridge {
         let distributor = self.distibutor.clone();
         let current_state = self.state.clone();
         let canceled = is_canceled.clone();
+        let queue = self.message_queue.clone();
+        let ready_for_input = is_ready_for_input.clone();
         spawn(async move {
             let mut outgoing = outgoing_for_listener;
             println!(
@@ -147,9 +154,19 @@ impl Bridge {
                             *canceled.lock().unwrap() = true;
                             break;
                         }
-                        EventType::Bridge(BridgeEvents::TerminalSend { mut message }) => {
+                        EventType::Bridge(BridgeEvents::TerminalSend { mut message, id }) => {
                             if !message.ends_with("\n") {
                                 message = format!("{}\n", message);
+                            }
+                            if ready_for_input.lock().unwrap().eq(&false)
+                                && current_state.lock().unwrap().ne(&BridgeState::PRINTING)
+                            {
+                                let mut guard = queue.lock().unwrap();
+                                guard.push_back(Message::new(message, id));
+                                continue;
+                            }
+                            if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
+                                *ready_for_input.lock().unwrap() = false
                             }
                             let result = outgoing.write(message.as_bytes());
                             if result.is_err() {
@@ -166,9 +183,16 @@ impl Bridge {
                                         }),
                                     })
                                     .expect("Cannot send message");
+                            } else {
+                                distributor
+                                    .send(EventInfo {
+                                        event_type: EventType::Websocket(
+                                            WebsocketEvents::TerminalSend { message, id },
+                                        ),
+                                    })
+                                    .expect("Cannot send message");
                             }
                         }
-                        EventType::Bridge(BridgeEvents::TerminalRead { message: _ }) => {}
                         EventType::Bridge(BridgeEvents::PrintEnd) => {
                             if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
                                 return ();
@@ -212,6 +236,7 @@ impl Bridge {
                                 .send(EventInfo {
                                     event_type: EventType::Bridge(BridgeEvents::TerminalSend {
                                         message: "M110 N0".to_string(),
+                                        id: Uuid::new_v4(),
                                     }),
                                 })
                                 .expect("Cannot send first line");
@@ -235,13 +260,14 @@ impl Bridge {
         let print_info = self.print_info.clone();
         let state = self.state.clone();
         let canceled = is_canceled.clone();
+        let ready_for_input = is_ready_for_input.clone();
+        let queue = self.message_queue.clone();
         spawn(async move {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
             let mut cap_data: Vec<String> = vec![];
             let mut has_collected_capabilities = false;
             let mut commands_left_to_send: Vec<String> = vec![];
-
             let cloned_dist = distributor.clone();
             loop {
                 match incoming.read(serial_buf.as_mut_slice()) {
@@ -259,6 +285,8 @@ impl Bridge {
                                         &collected,
                                         state.lock().unwrap().clone(),
                                         print_info.clone(),
+                                        ready_for_input.clone(),
+                                        queue.clone(),
                                     );
                                     break;
                                 }
@@ -268,6 +296,8 @@ impl Bridge {
                                         &collected,
                                         state.lock().unwrap().clone(),
                                         print_info.clone(),
+                                        ready_for_input.clone(),
+                                        queue.clone(),
                                     );
                                     collected = String::new();
 
@@ -295,6 +325,7 @@ impl Bridge {
                                             event_type: EventType::Bridge(
                                                 BridgeEvents::TerminalSend {
                                                     message: command.clone(),
+                                                    id: Uuid::new_v4(),
                                                 },
                                             ),
                                         })
@@ -336,6 +367,7 @@ impl Bridge {
                                                 event_type: EventType::Bridge(
                                                     BridgeEvents::TerminalSend {
                                                         message: "G90".to_string(),
+                                                        id: Uuid::new_v4(),
                                                     },
                                                 ),
                                             })
@@ -353,6 +385,8 @@ impl Bridge {
                                     &collected,
                                     state.lock().unwrap().clone(),
                                     print_info.clone(),
+                                    ready_for_input.clone(),
+                                    queue.clone(),
                                 );
                             }
                             collected = String::new();

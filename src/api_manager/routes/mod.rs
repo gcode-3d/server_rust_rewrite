@@ -7,5 +7,6 @@ pub mod login;
 pub mod ping;
 pub mod reconnect_connection;
 pub mod start_print;
+pub mod terminal;
 pub mod update_settings;
 pub mod upload_file;

@@ -1,12 +1,18 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use crossbeam_channel::Sender;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::ser::SerializeStruct;
+use uuid::Uuid;
 
 use crate::{
-    api_manager::models::{BridgeEvents, EventInfo, EventType, PrintInfo, WebsocketEvents},
+    api_manager::models::{
+        BridgeEvents, EventInfo, EventType, Message, PrintInfo, WebsocketEvents,
+    },
     bridge::BridgeState,
 };
 
@@ -23,12 +29,25 @@ pub fn parse_line(
     input: &String,
     state: BridgeState,
     print_info: Arc<Mutex<Option<PrintInfo>>>,
+    ready_for_input: Arc<Mutex<bool>>,
+    queue: Arc<Mutex<VecDeque<Message>>>,
 ) -> () {
+    if input.trim().starts_with("ok") {
+        let message = queue.lock().unwrap().pop_front();
+
+        if message.is_some() {
+            let message = message.unwrap();
+            *ready_for_input.lock().unwrap() = true;
+            send_raw(&distributor, message.clone());
+            return;
+        } else {
+            *ready_for_input.lock().unwrap() = true;
+        }
+    }
     if TOOLTEMPREGEX.is_match(input) {
         handle_temperature_message(distributor, input);
     } else if state == BridgeState::PRINTING && input.trim().starts_with("ok") {
         let mut guard = print_info.lock().expect("Cannot lock print info");
-
         if guard.is_some() {
             if LINENR.is_match(input) {
                 let number = LINENR.captures(input).unwrap()[1].parse::<u64>();
@@ -39,7 +58,7 @@ pub fn parse_line(
 
             handle_print(distributor, guard);
         }
-        send_copy_to_web(distributor, input);
+        send_output_to_web(distributor, input);
     } else if state == BridgeState::PRINTING && RESEND.is_match(input) {
         let mut guard = print_info.lock().expect("Cannot lock print info");
         let number = RESEND.captures(input).unwrap()[1].parse::<u64>().unwrap();
@@ -50,6 +69,7 @@ pub fn parse_line(
                     .send(EventInfo {
                         event_type: EventType::Bridge(BridgeEvents::TerminalSend {
                             message: line.unwrap().to_string(),
+                            id: Uuid::new_v4(),
                         }),
                     })
                     .expect("Cannot send file line");
@@ -67,11 +87,11 @@ pub fn parse_line(
             })
             .expect("Cannot update state");
     } else {
-        send_copy_to_web(distributor, input);
+        send_output_to_web(distributor, input);
     }
 }
 
-fn send_copy_to_web(distributor: &Sender<EventInfo>, input: &String) {
+fn send_output_to_web(distributor: &Sender<EventInfo>, input: &String) {
     distributor
         .send(EventInfo {
             event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
@@ -142,7 +162,10 @@ pub fn handle_print(
 
                 distributor
                     .send(EventInfo {
-                        event_type: EventType::Bridge(BridgeEvents::TerminalSend { message }),
+                        event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                            message,
+                            id: Uuid::new_v4(),
+                        }),
                     })
                     .expect("Cannot send file line");
                 break;
@@ -150,6 +173,18 @@ pub fn handle_print(
             Err(e) => eprintln!("[ERR][FILEPARSER] {}", e),
         }
     }
+}
+
+fn send_raw(distributor: &Sender<EventInfo>, message: Message) {
+    distributor
+        .send(EventInfo {
+            event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                message: message.content.clone(),
+                id: message.id,
+            }),
+        })
+        .expect("Cannot send message");
+    send_output_to_web(distributor, &message.content);
 }
 
 fn add_checksum(linenr: u64, line: String) -> String {
