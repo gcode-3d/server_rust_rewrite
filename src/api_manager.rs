@@ -662,42 +662,42 @@ async fn handle_route(
     distributor: Sender<EventInfo>,
     state: Arc<Mutex<StateWrapper>>,
 ) -> Response<Body> {
+    let path = normalize_url(&request);
+    if path.is_none() {
+        return bad_request_response();
+    }
+    let path = path.unwrap();
+
     // In case the request is an OPTIONS request, handle with cors headers.
     if request.method() == Method::OPTIONS {
-        let result = handle_option_requests(&request);
-        if result.is_some() {
-            return result.unwrap();
-        }
+        return handle_option_requests(&request);
     }
-
     // Handle exact messages.
-    if request.method() == Method::GET && request.uri().path().eq(routes::ping::PATH) {
+    if request.method() == Method::GET && path.eq(routes::ping::PATH) {
         return routes::ping::handler(request);
     }
-    if request.method().eq(&Method::POST) && request.uri().path().eq(routes::login::PATH) {
+    if request.method().eq(&Method::POST) && path.eq(routes::login::PATH) {
         return routes::login::handler(request).await;
     }
-    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::list_settings::PATH) {
+    if request.method().eq(&Method::GET) && path.eq(routes::list_settings::PATH) {
         return routes::list_settings::handler(request).await;
     }
-    if request.method().eq(&Method::POST) && request.uri().path().eq(routes::update_settings::PATH)
-    {
+    if request.method().eq(&Method::POST) && path.eq(routes::update_settings::PATH) {
         return routes::update_settings::handler(request).await;
     }
-    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::list_files::PATH) {
+    if request.method().eq(&Method::GET) && path.eq(routes::list_files::PATH) {
         return routes::list_files::handler(request).await;
     }
-    if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::upload_file::PATH) {
+    if request.method().eq(&Method::POST) && path.eq(routes::upload_file::PATH) {
         return routes::upload_file::handler(&mut request).await;
     }
-    if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::create_connection::PATH)
-    {
+    if request.method().eq(&Method::PUT) && path.eq(routes::create_connection::PATH) {
         return routes::create_connection::handler(request, distributor).await;
     }
-    if request.method().eq(&Method::PUT) && request.uri().path().eq(routes::start_print::PATH) {
+    if request.method().eq(&Method::PUT) && path.eq(routes::start_print::PATH) {
         return routes::start_print::handler(request, distributor, state).await;
     }
-    if request.method().eq(&Method::GET) && request.uri().path().eq(routes::dsn::PATH) {
+    if request.method().eq(&Method::GET) && path.eq(routes::dsn::PATH) {
         return routes::dsn::handler().await;
     }
     return not_found_response();
@@ -712,97 +712,103 @@ async fn handle_route(
     - request: Original hyper request.
 
 */
-fn handle_option_requests(request: &Request<Body>) -> Option<Response<Body>> {
-    if request.uri().path() == routes::login::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::login::METHODS)
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+fn handle_option_requests(request: &Request<Body>) -> Response<Body> {
+    let path = normalize_url(&request);
+    if path.is_none() {
+        return bad_request_response();
     }
-    if request.uri().path() == routes::ping::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::ping::METHODS)
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+    let path = path.unwrap();
+    if path == routes::login::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::login::METHODS)
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
     }
-    if request.uri().path() == routes::list_settings::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_METHODS,
-                    routes::list_settings::METHODS,
-                )
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_HEADERS,
-                    "Authorization, Content-Type",
-                )
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+    if path == routes::ping::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::ping::METHODS)
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
     }
-
-    if request.uri().path() == routes::upload_file::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_METHODS,
-                    routes::upload_file::METHODS,
-                )
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_HEADERS,
-                    "X-Requested-With,content-type, Authorization, X-force-upload",
-                )
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+    if path == routes::list_settings::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::list_settings::METHODS,
+            )
+            .header(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "Authorization, Content-Type",
+            )
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
     }
 
-    if request.uri().path() == routes::create_connection::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_METHODS,
-                    routes::create_connection::METHODS,
-                )
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
-    }
-    if request.uri().path() == routes::start_print::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(
-                    header::ACCESS_CONTROL_ALLOW_METHODS,
-                    routes::start_print::METHODS,
-                )
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+    if path == routes::upload_file::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::upload_file::METHODS,
+            )
+            .header(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "X-Requested-With,content-type, Authorization, X-force-upload",
+            )
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
     }
 
-    if request.uri().path() == routes::dsn::PATH {
-        return Some(
-            Response::builder()
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::dsn::METHODS)
-                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
-                .body(Body::empty())
-                .expect("Couldn't create a valid response"),
-        );
+    if path == routes::create_connection::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::create_connection::METHODS,
+            )
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
     }
-    return None;
+    if path == routes::start_print::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::start_print::METHODS,
+            )
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
+    }
+
+    if path == routes::dsn::PATH {
+        return Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, routes::dsn::METHODS)
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .body(Body::empty())
+            .expect("Couldn't create a valid response");
+    }
+    return not_found_response();
+}
+
+fn normalize_url(request: &Request<Body>) -> Option<String> {
+    let mut path = request.uri().path().to_string();
+    if !path.chars().all(|x| x.is_ascii()) {
+        return None;
+    }
+    if path.len() > 1 {
+        if path.clone().chars().last().unwrap() == '/' {
+            let mut chars = path.chars();
+            chars.next_back();
+            path = chars.as_str().to_string();
+        }
+    }
+    return Some(path);
 }
