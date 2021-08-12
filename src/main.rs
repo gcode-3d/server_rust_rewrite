@@ -2,10 +2,13 @@ use crate::{
     api_manager::models::{EventInfo, EventType, WebsocketEvents},
     bridge::BridgeState,
 };
-use api_manager::ApiManager;
+use api_manager::{
+    models::{BridgeEvents, SettingRow},
+    ApiManager,
+};
 
 use bridge::Bridge;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{unbounded, Sender};
 use sqlx::{Connection, Executor, SqliteConnection};
 use tokio::{
     fs::OpenOptions,
@@ -54,6 +57,9 @@ impl Manager {
         spawn(async move {
             let _ = spawn(ApiManager::start(dist_sender_clone, ws_receiver));
         });
+
+        self.connect_boot(&dist_sender).await;
+
         loop {
             if let Ok(event) = dist_receiver.try_recv() {
                 match event.event_type {
@@ -66,8 +72,14 @@ impl Manager {
                             &address, &port
                         );
                         if self.bridge_thread.is_some() {
-                            panic!("Created connection before old connection was terminated");
-                            // continue;
+                            dist_sender.send(EventInfo { 
+                                event_type: EventType::Bridge(BridgeEvents::ConnectionCreateError {
+                                    error: "Tried to create a new connection while already connected. Aborted all connections".to_string(),
+                            }) 
+                        })
+                        .expect("Cannot send message");
+
+                            continue;
                         }
 
                         let dist_sender_clone = dist_sender.clone();
@@ -212,6 +224,48 @@ impl Manager {
                 }
             } else {
                 yield_now().await;
+            }
+        }
+    }
+    /*
+        Fetch settings for automatically connecting on starting application (boot setting, device path & baudrate).
+        Check if those settings are correctly set and autoboot is enabled.
+        Try to send a connectionCreate event to the global dist sender.
+    */
+    async fn connect_boot(&self, sender: &Sender<EventInfo>) {
+        let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
+        let query = sqlx::query_as::<_, SettingRow>(
+                "SELECT * FROM settings where id = 'B_startOnBoot' or id = 'S_devicePath' or id = 'N_deviceBaud'",
+            );
+
+        let result = query.fetch_all(&mut connection).await;
+        if result.is_ok() {
+            let rows = result.unwrap();
+            if rows.len() == 3 {
+                let mut address: Option<String> = None;
+                let mut baud_rate = 0;
+                let mut connect = false;
+
+                for row in rows {
+                    if row.id == "B_startOnBoot" {
+                        connect = row.bool.unwrap();
+                    } else if row.id == "S_devicePath" {
+                        address = Some(row.raw_value);
+                    } else if row.id == "N_deviceBaud" {
+                        baud_rate = row.number.unwrap() as u32;
+                    }
+                }
+                if connect && baud_rate != 0 && address.is_some() {
+                println!("[BRIDGE] Connect on boot is set, trying to connect.");
+                    sender
+                        .send(EventInfo {
+                            event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
+                                address: address.unwrap(),
+                                port: baud_rate,
+                            }),
+                        })
+                        .expect("Cannot send message");
+                }
             }
         }
     }
