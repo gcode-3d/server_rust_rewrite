@@ -1,12 +1,42 @@
-use crossbeam_channel::Sender;
-use hyper::{header, Body, Request, Response};
-use sqlx::{Connection, SqliteConnection};
+use std::time::Duration;
 
-use crate::api_manager::models::{BridgeEvents, EventInfo, EventType, SettingRow};
+use crossbeam_channel::Sender;
+use hyper::{header, Body, Response};
+use serde_json::json;
+use sqlx::{Connection, SqliteConnection};
+use tokio::time::sleep;
+
+use crate::{
+    api_manager::models::{BridgeEvents, EventInfo, EventType, SettingRow, StateDescription},
+    bridge::BridgeState,
+};
+
 pub const METHODS: &str = "PUT, DELETE, POST";
 pub const PATH: &str = "/api/connection";
 
-pub async fn handler(_request: Request<Body>, distributor: Sender<EventInfo>) -> Response<Body> {
+pub async fn handler(state: BridgeState, distributor: Sender<EventInfo>) -> Response<Body> {
+    if state.eq(&BridgeState::DISCONNECTED) || state.eq(&BridgeState::ERRORED) {
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "text/plain")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "PUT, DELETE")
+            .status(403)
+            .body(Body::from(
+                json!({"error": true, "message": "Not connected"}).to_string(),
+            ))
+            .expect("Failed to construct valid response");
+    }
+
+    distributor
+        .send(EventInfo {
+            event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                state: BridgeState::DISCONNECTED,
+                description: StateDescription::None,
+            }),
+        })
+        .expect("Cannot send message");
+    sleep(Duration::from_millis(100)).await;
+
     let result = async {
         let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
         let query = sqlx::query_as::<_, SettingRow>("select * from settings");
@@ -40,17 +70,15 @@ pub async fn handler(_request: Request<Body>, distributor: Sender<EventInfo>) ->
         }
     }
     .await;
-
     if result.is_none() {
         return Response::builder()
             .header(header::CONTENT_TYPE, "text/plain")
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "PUT")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, METHODS)
             .status(400)
             .body(Body::from("Bad Request"))
             .expect("Failed to construct valid response");
     }
-
     distributor
         .send(EventInfo {
             event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {

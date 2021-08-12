@@ -694,6 +694,12 @@ async fn handle_route(
     if request.method().eq(&Method::PUT) && path.eq(routes::create_connection::PATH) {
         return routes::create_connection::handler(request, distributor).await;
     }
+    if request.method().eq(&Method::DELETE) && path.eq(routes::disconnect_connection::PATH) {
+        return routes::disconnect_connection::handler(state.lock().await.state, distributor).await;
+    }
+    if request.method().eq(&Method::POST) && path.eq(routes::reconnect_connection::PATH) {
+        return routes::reconnect_connection::handler(state.lock().await.state, distributor).await;
+    }
     if request.method().eq(&Method::PUT) && path.eq(routes::start_print::PATH) {
         return routes::start_print::handler(request, distributor, state).await;
     }
