@@ -87,7 +87,17 @@ impl Bridge {
                         .expect("cannot send message");
                 }
                 serialport::ErrorKind::InvalidInput => todo!("INV. INPUT"),
-                serialport::ErrorKind::Unknown => todo!("??"),
+                serialport::ErrorKind::Unknown => {
+                    self.distibutor
+                        .send(EventInfo {
+                            event_type: EventType::Bridge(
+                                bridge::BridgeEvents::ConnectionCreateError {
+                                    error: err.description,
+                                },
+                            ),
+                        })
+                        .expect("cannot send message");
+                }
                 serialport::ErrorKind::Io(_) => todo!("IO ERROR"),
             }
             return;
