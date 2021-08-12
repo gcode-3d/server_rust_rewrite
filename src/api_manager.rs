@@ -310,6 +310,10 @@ async fn websocket_handler(
                         for sender in sockets_clone.lock().await.iter() {
                             let result = sender.1.send(json.to_string());
                             if result.is_err() {
+                                println!(
+                                    "[WS] Connection closed: {}",
+                                    Uuid::from_u128(sender.0.clone()).to_hyphenated()
+                                );
                                 sockets_clone.lock().await.remove(sender.0);
                             }
                         }
@@ -468,6 +472,7 @@ async fn websocket_handler(
                                 .await
                                 .remove(&id.as_u128())
                                 .expect("Cannot remove socket");
+                            println!("[WS] Connection closed: {}", &id.to_hyphenated());
 
                             let _ = outgoing_clone
                                 .lock()
@@ -490,6 +495,7 @@ async fn websocket_handler(
                             continue;
                         }
                         if message.is_text() == false {
+                            println!("[WS] Connection closed: {}", &id.to_hyphenated());
                             let _ = sockets_clone.lock().await.remove(&id.as_u128());
                             outgoing_clone
                                 .lock()
@@ -511,7 +517,7 @@ async fn websocket_handler(
                             .expect("Cannot send message");
                     }
                     Err(e) => {
-                        eprintln!("[Websocket][ERROR] {}", e);
+                        eprintln!("[WS][ERROR] {}", e);
                         sockets_clone.lock().await.remove(&id.as_u128());
                     }
                 }
@@ -527,7 +533,6 @@ async fn websocket_handler(
     */
     spawn(async move {
         loop {
-
             if let Ok(message) = local_receiver.try_recv() {
                 outgoing_clone
                     .lock()
