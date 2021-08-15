@@ -18,8 +18,8 @@ mod bridge;
 mod client_update_check;
 mod parser;
 
-// #[tokio::main]
-#[tokio::main(worker_threads = 1)]
+#[tokio::main]
+// #[tokio::main(worker_threads = 1)]
 async fn main() {
     let _guard = sentry::init((
         "https://2a3db3e9cab34ab2996414dd5bf6e169@o229745.ingest.sentry.io/5843753",
