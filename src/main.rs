@@ -10,11 +10,7 @@ use api_manager::{
 use bridge::Bridge;
 use crossbeam_channel::{unbounded, Sender};
 use sqlx::{Connection, Executor, SqliteConnection};
-use tokio::{
-    fs::OpenOptions,
-    spawn,
-    task::{yield_now, JoinHandle},
-};
+use tokio::{fs::OpenOptions, spawn, task::JoinHandle};
 mod api_manager;
 mod bridge;
 mod client_update_check;
@@ -59,9 +55,8 @@ impl Manager {
         });
 
         self.connect_boot(&dist_sender).await;
-
         loop {
-            if let Ok(event) = dist_receiver.try_recv() {
+            if let Ok(event) = dist_receiver.recv() {
                 match event.event_type {
                     EventType::Bridge(api_manager::models::BridgeEvents::ConnectionCreate {
                         address,
@@ -205,9 +200,7 @@ impl Manager {
                     }
                     _ => (),
                 }
-            } else {
-                yield_now().await;
-            }
+            } 
         }
     }
     /*
