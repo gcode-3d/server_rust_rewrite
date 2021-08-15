@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::{
     api_manager::models::{EventInfo, EventType, WebsocketEvents},
     bridge::BridgeState,
@@ -10,13 +12,14 @@ use api_manager::{
 use bridge::Bridge;
 use crossbeam_channel::{unbounded, Sender};
 use sqlx::{Connection, Executor, SqliteConnection};
-use tokio::{fs::OpenOptions, spawn, task::JoinHandle};
+use tokio::{fs::OpenOptions, spawn, task::{yield_now, JoinHandle}, time::{Instant, sleep}};
 mod api_manager;
 mod bridge;
 mod client_update_check;
 mod parser;
 
-#[tokio::main]
+// #[tokio::main]
+#[tokio::main(worker_threads = 1)]
 async fn main() {
     let _guard = sentry::init((
         "https://2a3db3e9cab34ab2996414dd5bf6e169@o229745.ingest.sentry.io/5843753",
@@ -35,12 +38,14 @@ async fn main() {
 
 struct Manager {
     bridge_thread: Option<JoinHandle<()>>,
+    state: Arc<Mutex<BridgeState>>
 }
 
 impl Manager {
     fn new() -> Self {
         Self {
             bridge_thread: None,
+            state: Arc::new(Mutex::new(BridgeState::DISCONNECTED))
         }
     }
 
@@ -53,10 +58,10 @@ impl Manager {
         spawn(async move {
             let _ = spawn(ApiManager::start(dist_sender_clone, ws_receiver));
         });
-
         self.connect_boot(&dist_sender).await;
+        
         loop {
-            if let Ok(event) = dist_receiver.recv() {
+            if let Ok(event) = dist_receiver.try_recv() {
                 match event.event_type {
                     EventType::Bridge(api_manager::models::BridgeEvents::ConnectionCreate {
                         address,
@@ -158,6 +163,7 @@ impl Manager {
                         state,
                         description,
                     }) => {
+                        *self.state.lock().unwrap() = state;
                         if self.bridge_thread.is_none() {
                             continue;
                         }
@@ -200,7 +206,13 @@ impl Manager {
                     }
                     _ => (),
                 }
-            } 
+            } else {
+                let time = Instant::now();
+                yield_now().await;
+                if self.state.lock().unwrap().ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 200 {
+                    sleep(tokio::time::Duration::from_millis(200 - time.elapsed().as_millis() as u64)).await;
+                }
+            }
         }
     }
     /*
