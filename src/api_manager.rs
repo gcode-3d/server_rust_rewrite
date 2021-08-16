@@ -36,8 +36,13 @@ use hyper_tungstenite::{
 };
 use serde_json::{json, Value};
 use sqlx::{Connection, SqliteConnection};
-use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc};
-use tokio::{spawn, sync::Mutex, task::yield_now};
+use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc, time::Duration};
+use tokio::{
+    spawn,
+    sync::Mutex,
+    task::yield_now,
+    time::{sleep, Instant},
+};
 use uuid::Uuid;
 
 pub struct ApiManager {}
@@ -453,6 +458,7 @@ async fn websocket_handler(
     });
     let outgoing_clone = outgoing.clone();
     let sockets_clone = sockets.clone();
+    let state_clone = state.clone();
     /*
         Read incoming messages from the websocket connection.
     */
@@ -523,7 +529,15 @@ async fn websocket_handler(
                     }
                 }
             } else {
+                let time = Instant::now();
+                let state = state_clone.lock().await.state;
                 yield_now().await;
+                if time.elapsed().as_millis() < 1000 && state != BridgeState::PRINTING {
+                    sleep(Duration::from_millis(
+                        1000 - time.elapsed().as_millis() as u64,
+                    ))
+                    .await;
+                }
             }
         }
     });
