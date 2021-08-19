@@ -1,6 +1,8 @@
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard},
+    thread::sleep,
+    time::Duration,
 };
 
 use crossbeam_channel::Sender;
@@ -75,6 +77,13 @@ pub fn parse_line(
                     .expect("Cannot send file line");
             }
         }
+    } else if state == BridgeState::PRINTING
+        && input
+            .trim()
+            .to_lowercase()
+            .starts_with("echo:busy: processing")
+    {
+        sleep(Duration::from_secs(1));
     } else if input.to_lowercase().starts_with("error") {
         distributor
             .send(EventInfo {
