@@ -1,13 +1,10 @@
 pub mod models;
 pub mod responses;
 mod routes;
+pub(crate) mod websocket_handler;
 
-use crate::{
-    api_manager::{
-        models::EventType,
-        responses::{not_found_response, server_error_response, unauthorized_response},
-    },
-    bridge::BridgeState,
+use crate::api_manager::responses::{
+    not_found_response, server_error_response, unauthorized_response,
 };
 
 use self::{
@@ -15,9 +12,7 @@ use self::{
     responses::bad_request_response,
 };
 
-use chrono::{DateTime, Utc};
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use futures::{sink::SinkExt, stream::StreamExt, FutureExt};
+use crossbeam_channel::Sender;
 use hyper::{
     header::{self, HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN},
     upgrade::Upgraded,
@@ -29,21 +24,10 @@ use hyper::{
 };
 use hyper::{Body, Request, Response, Server};
 use hyper_staticfile::Static;
-use hyper_tungstenite::tungstenite::Message;
-use hyper_tungstenite::{
-    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame},
-    WebSocketStream,
-};
-use serde_json::{json, Value};
+use hyper_tungstenite::WebSocketStream;
 use sqlx::{Connection, SqliteConnection};
-use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc, time::Duration};
-use tokio::{
-    spawn,
-    sync::Mutex,
-    task::yield_now,
-    time::{sleep, Instant},
-};
-use uuid::Uuid;
+use std::{collections::HashMap, convert::Infallible, path::Path, sync::Arc};
+use tokio::{spawn, sync::Mutex};
 
 pub struct ApiManager {}
 
@@ -62,20 +46,13 @@ pub struct ApiManager {}
 impl ApiManager {
     pub async fn start(
         distributor: Sender<EventInfo>,
-        distributor_receiver: Receiver<EventInfo>,
+        sockets: Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
+        state: Arc<Mutex<StateWrapper>>,
     ) -> () {
-        let sockets: Arc<Mutex<HashMap<u128, Sender<String>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
-        let state: Arc<Mutex<StateWrapper>> = Arc::new(Mutex::new(StateWrapper {
-            state: BridgeState::DISCONNECTED,
-            description: models::StateDescription::None,
-        }));
         let file_server = Static::new(Path::new("client"));
 
         let make_svc = make_service_fn(move |_| {
             let distributor = distributor.clone();
-            let receiver = distributor_receiver.clone();
             let state = state.clone();
             let sockets = sockets.clone();
             let file_server = file_server.clone();
@@ -83,10 +60,9 @@ impl ApiManager {
                 Ok::<_, Error>(service_fn(move |req| {
                     let state = state.clone();
                     let dist_clone = distributor.clone();
-                    let rcvr_clone = receiver.clone();
                     let sockets = sockets.clone();
                     let file_server = file_server.clone();
-                    async move { router(req, file_server, dist_clone, rcvr_clone, state, sockets).await }
+                    async move { router(req, file_server, dist_clone, state, sockets).await }
                 }))
             }
         });
@@ -115,9 +91,8 @@ async fn router(
     mut req: Request<Body>,
     file_server: Static,
     distributor: Sender<EventInfo>,
-    receiver: Receiver<EventInfo>,
     state: Arc<Mutex<StateWrapper>>,
-    sockets: Arc<Mutex<HashMap<u128, Sender<String>>>>,
+    sockets: Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
 ) -> Result<Response<Body>, Infallible> {
     /*
     In case the request is an upgrade request, and the path is /ws:
@@ -177,10 +152,9 @@ async fn router(
         match hyper_tungstenite::upgrade(req, None) {
             Ok((mut response, websocket)) => {
                 spawn(async move {
-                    if let Err(e) = websocket_handler(
+                    if let Err(e) = websocket_handler::handler(
                         websocket.await.expect("[WS] Handshake failure"),
                         user,
-                        receiver,
                         state,
                         sockets,
                     )
@@ -229,439 +203,6 @@ async fn router(
             }
         };
     }
-}
-
-/*
-    Function gets called by the router after the request has been upgraded to a websocket connection.
-    The function keeps loaded as long as a connection is created
-
-
-    Arguments:
-    - websocket: The websocket object
-    - user: parsed user including permissions.
-    - receiver: Global receiver to catch events related to websockets.
-    - state: current state arc, used for sending intial ready event.
-    - sockets: hashmap including all websocket senders, mapped by uuid.
-
-*/
-async fn websocket_handler(
-    websocket: WebSocketStream<Upgraded>,
-    user: AuthPermissions,
-    receiver: Receiver<EventInfo>,
-    state: Arc<Mutex<StateWrapper>>,
-    sockets: Arc<Mutex<HashMap<u128, Sender<String>>>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (outgoing, mut incoming) = websocket.split();
-    let outgoing = Arc::new(Mutex::new(outgoing));
-    let (local_sender, local_receiver) = unbounded::<String>();
-    let id = Uuid::new_v4();
-    {
-        sockets
-            .lock()
-            .await
-            .insert(id.clone().as_u128(), local_sender);
-
-        println!(
-            "[WS] New connection: {} | User: {}",
-            id.to_hyphenated(),
-            &user.username()
-        );
-    }
-    let current_state = state.clone();
-    let sockets_clone = sockets.clone();
-    /*
-        Setup a receiver reader for the global event channel.
-    */
-    spawn(async move {
-        loop {
-            if let Ok(event) = receiver.try_recv() {
-                match event.event_type {
-                    models::EventType::Websocket(models::WebsocketEvents::TempUpdate {
-                        tools,
-                        bed,
-                        chamber,
-                    }) => {
-                        let json = json!({
-                            "type": "temperature_change",
-                            "content": {
-                                "tools": tools,
-                                "bed": bed,
-                                "chamber": chamber,
-                                "time": Utc::now().timestamp_millis()
-                            },
-                        });
-                        for sender in sockets_clone.lock().await.iter() {
-                            sender
-                                .1
-                                .send(json.to_string())
-                                .expect("Cannot send message");
-                        }
-                    }
-                    models::EventType::Websocket(models::WebsocketEvents::TerminalRead {
-                        message,
-                    }) => {
-                        let time: DateTime<Utc> = Utc::now();
-                        let json = json!({
-                            "type": "terminal_message",
-                            "content": [
-                                {
-                                    "message": message,
-                                    "type": "OUTPUT",
-                                    "id": null,
-                                    "time": time.to_rfc3339()
-                                }
-                            ]
-                        });
-                        for sender in sockets_clone.lock().await.iter() {
-                            let result = sender.1.send(json.to_string());
-                            if result.is_err() {
-                                println!(
-                                    "[WS] Connection closed: {}",
-                                    Uuid::from_u128(sender.0.clone()).to_hyphenated()
-                                );
-                                sockets_clone.lock().await.remove(sender.0);
-                            }
-                        }
-                    }
-                    models::EventType::Websocket(models::WebsocketEvents::TerminalSend {
-                        message,
-                        id,
-                    }) => {
-                        let time: DateTime<Utc> = Utc::now();
-                        let json = json!({
-                            "type": "terminal_message",
-                            "content": [
-                                {
-                                    "message": message.trim_end(),
-                                    "type": "INPUT",
-                                    "id": id.to_hyphenated().to_string(),
-                                    "time": time.to_rfc3339()
-                                }
-                            ]
-                        });
-                        for sender in sockets_clone.lock().await.iter() {
-                            sender
-                                .1
-                                .send(json.to_string())
-                                .expect("Cannot send message");
-                        }
-                    }
-
-                    models::EventType::Websocket(models::WebsocketEvents::StateUpdate {
-                        state,
-                        description,
-                    }) => {
-                        *current_state.lock().await = StateWrapper {
-                            state,
-                            description: description.clone(),
-                        };
-                        let json = match state {
-                            BridgeState::DISCONNECTED => json!({
-                                "type": "state_update",
-                                "content": {
-                                    "state": "Disconnected",
-                                    "description": serde_json::Value::Null
-                                }
-                            })
-                            .to_string(),
-                            BridgeState::CONNECTING => json!({
-                                "type": "state_update",
-                                "content": {
-                                    "state": "Connecting",
-                                    "description": serde_json::Value::Null
-                                }
-                            })
-                            .to_string(),
-                            BridgeState::CONNECTED => json!({
-                                "type": "state_update",
-                                "content": {
-                                    "state": "Connected",
-                                    "description": serde_json::Value::Null
-                                }
-                            })
-                            .to_string(),
-                            BridgeState::ERRORED => match description {
-                                models::StateDescription::Error { message } => json!({
-                                    "type": "state_update",
-                                    "content": {
-                                        "state": "Errored",
-                                        "description": {
-                                            "errorDescription": message
-                                        }
-                                    }
-                                })
-                                .to_string(),
-                                _ => json!({
-                                    "type": "state_update",
-                                    "content": {
-                                        "state": "Errored",
-                                        "description": serde_json::Value::Null
-                                    }
-                                })
-                                .to_string(),
-                            },
-                            BridgeState::PREPARING => todo!(),
-                            BridgeState::PRINTING => match description {
-                                models::StateDescription::Print {
-                                    filename,
-                                    progress,
-                                    start,
-                                    end,
-                                } => {
-                                    let mut end_string: Option<String> = None;
-                                    if end.is_some() {
-                                        end_string = Some(end.unwrap().to_rfc3339());
-                                    }
-                                    json!({
-                                        "type": "state_update",
-                                        "content": {
-                                            "state": "Printing",
-                                            "description": {
-                                                "printInfo": {
-                                                    "file": {
-                                                        "name": filename,
-                                                    },
-                                                    "progress": format!("{:.2}", progress),
-                                                    "startTime": start.to_rfc3339(),
-                                                    "estEndTime": end_string
-                                                }
-                                            }
-                                        }
-                                    })
-                                    .to_string()
-                                }
-                                _ => json!({
-                                    "type": "state_update",
-                                    "content": {
-                                        "state": "Printing",
-                                        "description": serde_json::Value::Null
-                                    }
-                                })
-                                .to_string(),
-                            },
-                            BridgeState::FINISHING => todo!(),
-                        };
-                        for sender in sockets_clone.lock().await.iter() {
-                            sender
-                                .1
-                                .send(json.to_string())
-                                .expect("Cannot send message");
-                        }
-                    }
-                    EventType::Bridge(_) => todo!(),
-                    EventType::KILL => (),
-                }
-            } else {
-                yield_now().await;
-            }
-        }
-    });
-    let outgoing_clone = outgoing.clone();
-    let sockets_clone = sockets.clone();
-    let state_clone = state.clone();
-    /*
-        Read incoming messages from the websocket connection.
-    */
-    spawn(async move {
-        loop {
-            if let Some(result) = incoming.next().now_or_never() {
-                if result.is_none() {
-                    yield_now().await;
-                    continue;
-                }
-                let result = result.unwrap();
-
-                match result {
-                    Ok(message) => {
-                        if message.is_close() {
-                            sockets_clone
-                                .lock()
-                                .await
-                                .remove(&id.as_u128())
-                                .expect("Cannot remove socket");
-                            println!("[WS] Connection closed: {}", &id.to_hyphenated());
-
-                            let _ = outgoing_clone
-                                .lock()
-                                .await
-                                .send(Message::Close(Some(CloseFrame {
-                                    code: CloseCode::Normal,
-                                    reason: std::borrow::Cow::Borrowed(""),
-                                })))
-                                .await;
-
-                            continue;
-                        }
-                        if message.is_ping() {
-                            outgoing_clone
-                                .lock()
-                                .await
-                                .send(Message::Pong(message.into_data()))
-                                .await
-                                .expect("Cannot send message");
-                            continue;
-                        }
-                        if message.is_text() == false {
-                            println!("[WS] Connection closed: {}", &id.to_hyphenated());
-                            let _ = sockets_clone.lock().await.remove(&id.as_u128());
-                            outgoing_clone
-                                .lock()
-                                .await
-                                .send(Message::Close(Some(CloseFrame {
-                                    code: CloseCode::Policy,
-                                    reason: std::borrow::Cow::Borrowed("Bad data"),
-                                })))
-                                .await
-                                .expect("Cannot send message");
-                            continue;
-                        }
-
-                        outgoing_clone
-                            .lock()
-                            .await
-                            .send(Message::text("Boop back!"))
-                            .await
-                            .expect("Cannot send message");
-                    }
-                    Err(e) => {
-                        eprintln!("[WS][ERROR] {}", e);
-                        sockets_clone.lock().await.remove(&id.as_u128());
-                    }
-                }
-            } else {
-                let time = Instant::now();
-                let state = state_clone.lock().await.state;
-                yield_now().await;
-                if time.elapsed().as_millis() < 1000 && state != BridgeState::PRINTING {
-                    sleep(Duration::from_millis(
-                        1000 - time.elapsed().as_millis() as u64,
-                    ))
-                    .await;
-                }
-            }
-        }
-    });
-    let outgoing_clone = outgoing.clone();
-
-    /*
-        Read messages coming from the local_sender pushed into the hashmap.
-    */
-    spawn(async move {
-        loop {
-            if let Ok(message) = local_receiver.try_recv() {
-                outgoing_clone
-                    .lock()
-                    .await
-                    .send(Message::text(message))
-                    .await
-                    .expect("Cannot send message");
-            } else {
-                yield_now().await;
-            }
-        }
-    });
-
-    /*
-        Construct intial ready event message.
-    */
-    let mut json = json!({
-            "type":"ready",
-            "content": {}
-    });
-    let content = json.get_mut("content").unwrap();
-    let user = json!({
-    "username": user.username(),
-    "permissions" : {
-         "admin": user.admin() ,
-         "connection.edit": user.edit_connection(),
-         "file.access": user.file_access(),
-         "file.edit": user.file_edit(),
-         "print_state.edit": user.print_state_edit(),
-         "settings.edit": user.settings_edit(),
-         "permissions.edit": user.users_edit(),
-         "terminal.read": user.terminal_read(),
-         "terminal.send": user.terminal_send(),
-         "webcam.view": user.webcam(),
-         "update.check": user.update(),
-         "update.manage": user.update()
-        }
-    });
-
-    let state_info = state.lock().await;
-    match state_info.state {
-        BridgeState::DISCONNECTED => {
-            *content = json!({
-                "user": user,
-                "state": "Disconnected",
-            });
-        }
-        BridgeState::CONNECTING => {
-            *content = json!({
-                "user": user,
-                "state": "Connecting",
-            });
-        }
-        BridgeState::CONNECTED => {
-            *content = json!({
-                "user": user,
-                "state": "Connected",
-            });
-        }
-        BridgeState::ERRORED => {
-            let description = match state_info.description.clone() {
-                models::StateDescription::Error { message } => message,
-                _ => "Unknown error".to_string(),
-            };
-
-            *content = json!({
-                "user": user,
-                "state": "Errored",
-                "description": {
-                    "errorDescription": description
-                }
-            });
-        }
-        BridgeState::PREPARING => todo!(),
-        BridgeState::PRINTING => {
-            let description = match state_info.description.clone() {
-                models::StateDescription::Print {
-                    filename,
-                    progress,
-                    start,
-                    end,
-                } => {
-                    let mut end_string = None;
-                    if end.is_some() {
-                        end_string = Some(end.unwrap().to_rfc3339());
-                    }
-                    json!({
-                        "printInfo": {
-                            "file": {
-                                "name": filename,
-                            },
-                        "progress": format!("{:.2}", progress),
-                        "startTime": start.to_rfc3339(),
-                        "estEndTime": end_string
-                    }})
-                }
-                _ => Value::Null,
-            };
-            *content = json!({
-                "user": user,
-                "state": "Printing",
-                "description": description
-            });
-        }
-        BridgeState::FINISHING => todo!(),
-    };
-
-    outgoing
-        .lock()
-        .await
-        .send(Message::text(json.to_string()))
-        .await
-        .expect("Cannot send message");
-    return Ok(());
 }
 
 /*
@@ -743,14 +284,16 @@ async fn handle_route(
         if !permissions.edit_connection() {
             return unauthorized_response();
         }
-        return routes::disconnect_connection::handler(state.lock().await.state, distributor).await;
+        let state = state.lock().await.state.clone();
+        return routes::disconnect_connection::handler(state, distributor).await;
     }
 
     if request.method().eq(&Method::POST) && path.eq(routes::reconnect_connection::PATH) {
         if !permissions.edit_connection() {
             return unauthorized_response();
         }
-        return routes::reconnect_connection::handler(state.lock().await.state, distributor).await;
+        let state = state.lock().await.state.clone();
+        return routes::reconnect_connection::handler(state, distributor).await;
     }
 
     if request.method().eq(&Method::PUT) && path.eq(routes::start_print::PATH) {
@@ -764,7 +307,8 @@ async fn handle_route(
         if !permissions.terminal_send() {
             return unauthorized_response();
         }
-        return routes::terminal::handler(request, distributor, state.lock().await.state).await;
+        let state = state.lock().await.state.clone();
+        return routes::terminal::handler(request, distributor, state).await;
     }
 
     return not_found_response();

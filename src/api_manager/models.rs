@@ -329,7 +329,7 @@ impl PrintInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StateWrapper {
     pub state: BridgeState,
     pub description: StateDescription,
