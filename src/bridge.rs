@@ -78,6 +78,7 @@ impl Bridge {
         let port_result = serialport::new(&self.address, self.baudrate).open();
         if port_result.is_err() {
             let err = port_result.err().unwrap();
+
             match err.kind {
                 serialport::ErrorKind::NoDevice => {
                     self.distibutor
@@ -151,8 +152,9 @@ impl Bridge {
         let ready_for_input = is_ready_for_input.clone();
         spawn(async move {
             let mut outgoing = outgoing_for_listener;
+
             println!(
-                "[Bridge] connected to port {} with {} baudrate",
+                "[BRIDGE] connected to port {} with {} baudrate",
                 outgoing.as_ref().name().unwrap_or("UNNAMED".to_string()),
                 outgoing.as_ref().baud_rate().unwrap()
             );
@@ -418,6 +420,7 @@ impl Bridge {
                             if *is_canceled.lock().unwrap() {
                                 break;
                             }
+
                             eprintln!("[BRIDGE][ERROR][READ]: {:?}", e);
                             cloned_dist
                                 .send(EventInfo {

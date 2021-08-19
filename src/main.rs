@@ -97,6 +97,17 @@ impl Manager {
                         let dist_sender_clone = dist_sender.clone();
                         let bridge_receiver_clone = bridge_receiver.clone();
                         self.bridge_thread = Some(spawn(async move {
+                            let panic_sender_clone = dist_sender_clone.clone();
+                            std::panic::set_hook(Box::new(move |_| {
+                                
+                                panic_sender_clone.send(EventInfo { event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                    state: BridgeState::ERRORED,
+                                    description: StateDescription::Error {
+                                        message: "An internal error occurred\nCheck the logs for more info.".to_string()
+                                    },
+                                }) 
+                            }).expect("Cannot send message");
+                            }));
                             let mut bridge = Bridge::new(
                                 dist_sender_clone,
                                 bridge_receiver_clone,
@@ -359,22 +370,21 @@ impl Manager {
                                         end_string = Some(end.unwrap().to_rfc3339());
                                     }
                                     json!({
-																			"type": "state_update",
-																			"content": {
-																					"state": "Printing",
-																					"description": {
-																							"printInfo": {
-																									"file": {
-																											"name": filename,
-																									},
-																									"progress": format!("{:.2}", progress),
-																									"startTime": start.to_rfc3339(),
-																									"estEndTime": end_string
-																							}
-																					}
-																			}
-																	})
-																	.to_string()
+											"type": "state_update",
+											"content": {
+												"state": "Printing",
+												"description": {
+													"printInfo": {
+														"file": {
+															"name": filename,
+														},
+														"progress": format!("{:.2}", progress),
+														"startTime": start.to_rfc3339(),
+												    	"estEndTime": end_string
+													}
+												}
+											}
+									}).to_string()
                                 }
                                 _ => json!({
                                         "type": "state_update",
@@ -400,10 +410,10 @@ impl Manager {
                 let time = Instant::now();
                 yield_now().await;
                 let state = self.state.lock().await.state;
-                if state.ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 500 {
-                    sleep(tokio::time::Duration::from_millis(500 - time.elapsed().as_millis() as u64)).await;
-                }else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 5 {
-                    sleep(tokio::time::Duration::from_millis(5 - time.elapsed().as_millis() as u64)).await;
+                if state.ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 300 {
+                    sleep(tokio::time::Duration::from_millis(300 - time.elapsed().as_millis() as u64)).await;
+                }else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 3 {
+                    sleep(tokio::time::Duration::from_millis(3 - time.elapsed().as_millis() as u64)).await;
                 }
             }
         }
