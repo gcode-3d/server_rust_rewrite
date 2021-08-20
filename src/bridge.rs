@@ -1,12 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use serialport;
-use std::{
-    collections::VecDeque,
-    io::Write,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-use tokio::{spawn, task::yield_now, time::sleep};
+use std::{collections::VecDeque, io::Write, sync::Arc, time::Duration};
+use tokio::{spawn, sync::Mutex, task::yield_now, time::sleep};
 use uuid::Uuid;
 
 use crate::{
@@ -15,7 +10,7 @@ use crate::{
         models::{
             BridgeEvents, EventInfo,
             EventType::{self},
-            Message, PrintInfo, WebsocketEvents,
+            Message, PrintInfo, StateDescription, StateWrapper, WebsocketEvents,
         },
     },
     bridge, parser,
@@ -36,9 +31,10 @@ pub enum BridgeState {
 pub struct Bridge {
     address: String,
     baudrate: u32,
-    pub state: Arc<Mutex<BridgeState>>,
+    state: Arc<Mutex<StateWrapper>>,
     print_info: Arc<Mutex<Option<PrintInfo>>>,
     distibutor: Sender<EventInfo>,
+    sender: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
     message_queue: Arc<Mutex<VecDeque<Message>>>,
 }
@@ -46,26 +42,32 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(
         distibutor: Sender<EventInfo>,
+        sender: Sender<EventInfo>,
         receiver: Receiver<EventInfo>,
         address: String,
         baudrate: u32,
+        state: Arc<Mutex<StateWrapper>>,
     ) -> Self {
         println!("[BRIDGE] Created new Bridge instance");
         return Self {
             address,
             baudrate,
-            state: Arc::new(Mutex::new(BridgeState::DISCONNECTED)),
+            state,
             print_info: Arc::new(Mutex::new(None)),
             distibutor,
+            sender,
             receiver,
             message_queue: Arc::new(Mutex::new(VecDeque::new())),
         };
     }
 
     // if port fails, emit failure message to distributor.
-    pub fn start(&mut self) {
+    pub async fn start(&mut self) {
         let is_canceled = Arc::new(Mutex::new(false));
-        *self.state.lock().unwrap() = BridgeState::CONNECTING;
+        *self.state.lock().await = StateWrapper {
+            state: BridgeState::CONNECTING,
+            description: StateDescription::None,
+        };
         self.distibutor
             .send(EventInfo {
                 event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
@@ -121,7 +123,7 @@ impl Bridge {
         let state = self.state.clone();
         spawn(async move {
             sleep(Duration::from_secs(10)).await;
-            if *state.lock().unwrap() == BridgeState::CONNECTING {
+            if state.lock().await.state == BridgeState::CONNECTING {
                 distributor
                     .send(EventInfo {
                         event_type: EventType::Bridge(BridgeEvents::StateUpdate {
@@ -163,22 +165,22 @@ impl Bridge {
                     match event.event_type {
                         EventType::KILL => {
                             drop(outgoing);
-                            *canceled.lock().unwrap() = true;
+                            *canceled.lock().await = true;
                             break;
                         }
                         EventType::Bridge(BridgeEvents::TerminalSend { mut message, id }) => {
                             if !message.ends_with("\n") {
                                 message = format!("{}\n", message);
                             }
-                            if ready_for_input.lock().unwrap().eq(&false)
-                                && current_state.lock().unwrap().ne(&BridgeState::PRINTING)
+                            if ready_for_input.lock().await.eq(&false)
+                                && current_state.lock().await.state.ne(&BridgeState::PRINTING)
                             {
-                                let mut guard = queue.lock().unwrap();
+                                let mut guard = queue.lock().await;
                                 guard.push_back(Message::new(message, id));
                                 continue;
                             }
-                            if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
-                                *ready_for_input.lock().unwrap() = false
+                            if current_state.lock().await.state.ne(&BridgeState::PRINTING) {
+                                *ready_for_input.lock().await = false
                             }
                             let result = outgoing.write(message.as_bytes());
                             if result.is_err() {
@@ -206,10 +208,10 @@ impl Bridge {
                             }
                         }
                         EventType::Bridge(BridgeEvents::PrintEnd) => {
-                            if current_state.lock().unwrap().ne(&BridgeState::PRINTING) {
+                            if current_state.lock().await.state.ne(&BridgeState::PRINTING) {
                                 return ();
                             }
-                            *print_info.lock().unwrap() = None;
+                            *print_info.lock().await = None;
                             distributor
                                 .send(EventInfo {
                                     event_type: EventType::Bridge(BridgeEvents::StateUpdate {
@@ -220,10 +222,10 @@ impl Bridge {
                                 .expect("Cannot send message");
                         }
                         EventType::Bridge(BridgeEvents::PrintStart { info }) => {
-                            if current_state.lock().unwrap().ne(&BridgeState::CONNECTED) {
+                            if current_state.lock().await.state.ne(&BridgeState::CONNECTED) {
                                 return ();
                             }
-                            let mut guard = print_info.lock().unwrap();
+                            let mut guard = print_info.lock().await;
                             let filename = info.filename.clone();
                             let progress = info.progress();
                             let start = info.start.clone();
@@ -253,13 +255,6 @@ impl Bridge {
                                 })
                                 .expect("Cannot send first line");
                         }
-                        EventType::Bridge(BridgeEvents::StateUpdate {
-                            state,
-                            description: _,
-                        }) => {
-                            *current_state.lock().unwrap() = state;
-                        }
-
                         _ => (),
                     }
                 } else {
@@ -274,6 +269,7 @@ impl Bridge {
         let canceled = is_canceled.clone();
         let ready_for_input = is_ready_for_input.clone();
         let queue = self.message_queue.clone();
+        let bridge_sender = self.sender.clone();
         spawn(async move {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
@@ -284,37 +280,44 @@ impl Bridge {
             loop {
                 match incoming.read(serial_buf.as_mut_slice()) {
                     Ok(t) => {
-                        if *canceled.lock().unwrap() {
+                        if *canceled.lock().await {
                             break;
                         }
                         let data = String::from_utf8_lossy(&serial_buf[..t]);
                         let string = data.into_owned();
                         if string == "\n" {
-                            if state.lock().unwrap().eq(&BridgeState::CONNECTING) {
+                            if state.lock().await.state.eq(&BridgeState::CONNECTING) {
                                 if collected.to_lowercase().starts_with("error") {
                                     parser::parse_line(
                                         &distributor,
+                                        &bridge_sender,
                                         &collected,
-                                        state.lock().unwrap().clone(),
+                                        state.lock().await.clone().state,
                                         print_info.clone(),
                                         ready_for_input.clone(),
                                         queue.clone(),
-                                    );
+                                    )
+                                    .await;
                                     break;
                                 }
                                 if has_collected_capabilities && collected.starts_with("ok") {
                                     parser::parse_line(
                                         &distributor,
+                                        &bridge_sender,
                                         &collected,
-                                        state.lock().unwrap().clone(),
+                                        state.lock().await.clone().state,
                                         print_info.clone(),
                                         ready_for_input.clone(),
                                         queue.clone(),
-                                    );
+                                    )
+                                    .await;
                                     collected = String::new();
 
                                     if commands_left_to_send.len() == 0 {
-                                        *state.lock().unwrap() = BridgeState::CONNECTED;
+                                        *state.lock().await = StateWrapper {
+                                            state: BridgeState::CONNECTED,
+                                            description: StateDescription::None,
+                                        };
 
                                         distributor
                                             .send(EventInfo {
@@ -363,7 +366,7 @@ impl Bridge {
                                                 // let is_canceled = canceled.clone();
                                                 // spawn(async move {
                                                 //     loop {
-                                                //         if *is_canceled.lock().unwrap() {
+                                                //         if *is_canceled.lock().await {
                                                 //             break;
                                                 //         }
                                                 //         std::thread::sleep(Duration::from_secs(2));
@@ -394,12 +397,14 @@ impl Bridge {
                             } else {
                                 parser::parse_line(
                                     &distributor,
+                                    &bridge_sender,
                                     &collected,
-                                    state.lock().unwrap().clone(),
+                                    state.lock().await.clone().state,
                                     print_info.clone(),
                                     ready_for_input.clone(),
                                     queue.clone(),
-                                );
+                                )
+                                .await;
                             }
                             collected = String::new();
                         } else {
@@ -410,14 +415,14 @@ impl Bridge {
                     }
                     Err(ref e) => match e.kind() {
                         std::io::ErrorKind::TimedOut => {
-                            if *is_canceled.lock().unwrap() {
+                            if *is_canceled.lock().await {
                                 break;
                             } else {
                                 yield_now().await;
                             }
                         }
                         _ => {
-                            if *is_canceled.lock().unwrap() {
+                            if *is_canceled.lock().await {
                                 break;
                             }
 

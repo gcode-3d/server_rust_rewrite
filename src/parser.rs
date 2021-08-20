@@ -1,14 +1,10 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
-    thread::sleep,
-    time::Duration,
-};
+use std::{collections::VecDeque, sync::Arc, thread::sleep, time::Duration};
 
 use crossbeam_channel::Sender;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::ser::SerializeStruct;
+use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
 use crate::{
@@ -26,8 +22,9 @@ lazy_static! {
     static ref RESEND: Regex = Regex::new(r"Resend: N?:?(\d+)").unwrap();
 }
 
-pub fn parse_line(
+pub async fn parse_line(
     distributor: &Sender<EventInfo>,
+    sender: &Sender<EventInfo>,
     input: &String,
     state: BridgeState,
     print_info: Arc<Mutex<Option<PrintInfo>>>,
@@ -35,21 +32,21 @@ pub fn parse_line(
     queue: Arc<Mutex<VecDeque<Message>>>,
 ) -> () {
     if input.trim().starts_with("ok") {
-        let message = queue.lock().unwrap().pop_front();
+        let message = queue.lock().await.pop_front();
 
         if message.is_some() {
             let message = message.unwrap();
-            *ready_for_input.lock().unwrap() = true;
+            *ready_for_input.lock().await = true;
             send_raw(&distributor, message.clone());
             return;
         } else {
-            *ready_for_input.lock().unwrap() = true;
+            *ready_for_input.lock().await = true;
         }
     }
     if TOOLTEMPREGEX.is_match(input) {
         handle_temperature_message(distributor, input);
     } else if state == BridgeState::PRINTING && input.trim().starts_with("ok") {
-        let mut guard = print_info.lock().expect("Cannot lock print info");
+        let mut guard = print_info.lock().await;
         if guard.is_some() {
             if LINENR.is_match(input) {
                 let number = LINENR.captures(input).unwrap()[1].parse::<u64>();
@@ -58,11 +55,11 @@ pub fn parse_line(
                 }
             }
 
-            handle_print(distributor, guard);
+            handle_print(distributor, sender, guard);
         }
         send_output_to_web(distributor, input);
     } else if state == BridgeState::PRINTING && RESEND.is_match(input) {
-        let mut guard = print_info.lock().expect("Cannot lock print info");
+        let mut guard = print_info.lock().await;
         let number = RESEND.captures(input).unwrap()[1].parse::<u64>().unwrap();
         if guard.is_some() {
             let line = guard.as_mut().unwrap().get_sent_line(number);
@@ -112,6 +109,7 @@ fn send_output_to_web(distributor: &Sender<EventInfo>, input: &String) {
 
 pub fn handle_print(
     distributor: &Sender<EventInfo>,
+    sender: &Sender<EventInfo>,
     mut print_info_guard: MutexGuard<Option<PrintInfo>>,
 ) -> () {
     loop {
@@ -169,7 +167,7 @@ pub fn handle_print(
                     .unwrap()
                     .insert_sent_line(linenr, message.clone());
 
-                distributor
+                sender
                     .send(EventInfo {
                         event_type: EventType::Bridge(BridgeEvents::TerminalSend {
                             message,

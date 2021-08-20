@@ -96,6 +96,8 @@ impl Manager {
 
                         let dist_sender_clone = dist_sender.clone();
                         let bridge_receiver_clone = bridge_receiver.clone();
+                        let bridge_sender_clone = bridge_sender.clone();
+                        let state = self.state.clone();
                         self.bridge_thread = Some(spawn(async move {
                             let panic_sender_clone = dist_sender_clone.clone();
                             std::panic::set_hook(Box::new(move |_| {
@@ -110,11 +112,13 @@ impl Manager {
                             }));
                             let mut bridge = Bridge::new(
                                 dist_sender_clone,
+                                bridge_sender_clone,
                                 bridge_receiver_clone,
                                 address,
                                 port,
+                                state
                             );
-                            bridge.start();
+                            bridge.start().await;
                         }));
                     }
                     EventType::Bridge(
