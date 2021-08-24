@@ -198,6 +198,7 @@ impl Bridge {
                                     })
                                     .expect("Cannot send message");
                             } else {
+                                println!("[BRIDGE][SEND] {}", message);
                                 distributor
                                     .send(EventInfo {
                                         event_type: EventType::Websocket(
@@ -277,6 +278,7 @@ impl Bridge {
             let mut has_collected_capabilities = false;
             let mut commands_left_to_send: Vec<String> = vec![];
             let cloned_dist = distributor.clone();
+            let mut parser = parser::Parser::new();
             loop {
                 match incoming.read(serial_buf.as_mut_slice()) {
                     Ok(t) => {
@@ -288,29 +290,31 @@ impl Bridge {
                         if string == "\n" {
                             if state.lock().await.state.eq(&BridgeState::CONNECTING) {
                                 if collected.to_lowercase().starts_with("error") {
-                                    parser::parse_line(
-                                        &distributor,
-                                        &bridge_sender,
-                                        &collected,
-                                        state.lock().await.clone().state,
-                                        print_info.clone(),
-                                        ready_for_input.clone(),
-                                        queue.clone(),
-                                    )
-                                    .await;
+                                    parser
+                                        .parse_line(
+                                            &distributor,
+                                            &bridge_sender,
+                                            &collected,
+                                            state.lock().await.clone().state,
+                                            print_info.clone(),
+                                            ready_for_input.clone(),
+                                            queue.clone(),
+                                        )
+                                        .await;
                                     break;
                                 }
                                 if has_collected_capabilities && collected.starts_with("ok") {
-                                    parser::parse_line(
-                                        &distributor,
-                                        &bridge_sender,
-                                        &collected,
-                                        state.lock().await.clone().state,
-                                        print_info.clone(),
-                                        ready_for_input.clone(),
-                                        queue.clone(),
-                                    )
-                                    .await;
+                                    parser
+                                        .parse_line(
+                                            &distributor,
+                                            &bridge_sender,
+                                            &collected,
+                                            state.lock().await.clone().state,
+                                            print_info.clone(),
+                                            ready_for_input.clone(),
+                                            queue.clone(),
+                                        )
+                                        .await;
                                     collected = String::new();
 
                                     if commands_left_to_send.len() == 0 {
@@ -348,6 +352,7 @@ impl Bridge {
 
                                     continue;
                                 }
+                                // checking if capabilities are complete and parsing appropriate responses.
                                 if collected.starts_with("ok") {
                                     if cap_data.len() == 0 {
                                         continue;
@@ -386,7 +391,7 @@ impl Bridge {
                                                     },
                                                 ),
                                             })
-                                            .expect("Cannot send websocket message");
+                                            .expect("Cannot send message");
 
                                         cap_data.push(collected);
                                         has_collected_capabilities = true;
@@ -395,16 +400,17 @@ impl Bridge {
                                     cap_data.push(collected);
                                 }
                             } else {
-                                parser::parse_line(
-                                    &distributor,
-                                    &bridge_sender,
-                                    &collected,
-                                    state.lock().await.clone().state,
-                                    print_info.clone(),
-                                    ready_for_input.clone(),
-                                    queue.clone(),
-                                )
-                                .await;
+                                parser
+                                    .parse_line(
+                                        &distributor,
+                                        &bridge_sender,
+                                        &collected,
+                                        state.lock().await.clone().state,
+                                        print_info.clone(),
+                                        ready_for_input.clone(),
+                                        queue.clone(),
+                                    )
+                                    .await;
                             }
                             collected = String::new();
                         } else {

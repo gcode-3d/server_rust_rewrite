@@ -325,7 +325,6 @@ async fn authenticate_route(request: &Request<Body>) -> Option<AuthPermissions> 
         .unwrap()
         .to_str()
         .expect("Not a valid value");
-
     if token.len() != 60 || !token.chars().all(char::is_alphanumeric) {
         return None;
     }
