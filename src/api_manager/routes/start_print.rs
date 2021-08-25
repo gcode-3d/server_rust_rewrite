@@ -61,9 +61,9 @@ pub async fn handler(
     if filename.is_empty() || !filename.ends_with(".gcode") {
         return bad_request_response();
     }
-    // if state.lock().await.state.ne(&BridgeState::CONNECTED) {
-    //     return forbidden_response();
-    // }
+    if state.lock().await.state.ne(&BridgeState::CONNECTED) {
+        return forbidden_response();
+    }
 
     let path = Path::new("./files/")
         .join(filename)
