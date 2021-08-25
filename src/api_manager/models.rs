@@ -304,13 +304,6 @@ impl PrintInfo {
         }
         return Some(Line::new(line.unwrap().clone(), index));
     }
-    pub fn set_line_number(&mut self, number: usize) -> bool {
-        if number >= self.gcode.len() {
-            return false;
-        }
-        self.line_number = number;
-        return true;
-    }
     pub fn progress(&self) -> f64 {
         if self.filesize == 0 {
             return 0.0;
@@ -387,5 +380,24 @@ pub struct Message {
 impl Message {
     pub fn new(content: String, id: Uuid) -> Self {
         return Self { content, id };
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum BridgeAction {
+    Continue,
+    Error,
+    Resend(usize),
+}
+
+impl std::fmt::Display for BridgeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BridgeAction::Continue => write!(f, "Continue"),
+            BridgeAction::Error => write!(f, "Error"),
+            BridgeAction::Resend(line) => {
+                write!(f, "Resend N{}", line)
+            }
+        }
     }
 }

@@ -1,22 +1,8 @@
-use std::{collections::VecDeque, sync::Arc, time::Duration};
-
-use crossbeam_channel::Sender;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::ser::SerializeStruct;
-use tokio::{
-    sync::{Mutex, MutexGuard},
-    task::yield_now,
-    time::sleep,
-};
-use uuid::Uuid;
 
-use crate::{
-    api_manager::models::{
-        BridgeEvents, EventInfo, EventType, Message, PrintInfo, StateDescription, WebsocketEvents,
-    },
-    bridge::BridgeState,
-};
+use crate::api_manager::models::{BridgeAction, WebsocketEvents};
 
 lazy_static! {
     static ref TOOLTEMPREGEX: Regex = Regex::new(r"((T\d?):([\d\.]+) ?/([\d\.]+))+").unwrap();
@@ -27,171 +13,26 @@ lazy_static! {
 }
 pub struct Parser {}
 impl Parser {
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    pub async fn parse_line(
-        &mut self,
-        distributor: &Sender<EventInfo>,
-        sender: &Sender<EventInfo>,
-        input: &String,
-        state: BridgeState,
-        print_info: Arc<Mutex<Option<PrintInfo>>>,
-        ready_for_input: Arc<Mutex<bool>>,
-        queue: Arc<Mutex<VecDeque<Message>>>,
-    ) -> () {
-        if input.trim().starts_with("ok") {
-            let message = queue.lock().await.pop_front();
-
-            if message.is_some() {
-                let message = message.unwrap();
-                *ready_for_input.lock().await = true;
-                Parser::send_raw(&distributor, message.clone());
-                return;
-            } else {
-                *ready_for_input.lock().await = true;
+    pub fn parse_responses(responses: Vec<String>) -> BridgeAction {
+        for response in responses {
+            if RESEND.is_match(&response) {
+                return BridgeAction::Resend(
+                    RESEND.captures(&response).unwrap()[0]
+                        .parse::<usize>()
+                        .unwrap(),
+                );
+            }
+            if response.starts_with("error") {
+                if !response.starts_with("Error:Line Number is not Last Line Number+1, Last Line: ")
+                {
+                    return BridgeAction::Error;
+                }
             }
         }
-        if !TOOLTEMPREGEX.is_match(input) {
-            println!("[BRIDGE][RECV] {}", input);
-        }
-        if TOOLTEMPREGEX.is_match(input) {
-            Parser::handle_temperature_message(distributor, input);
-        } else if state == BridgeState::PRINTING && RESEND.is_match(input) {
-            let number = RESEND.captures(input).unwrap()[1].parse::<usize>().unwrap();
-            println!("[PARSER][RESEND] Getting a resend for: {}", number);
-            yield_now().await;
-            sleep(Duration::from_secs(1)).await;
-            let mut guard = print_info.lock().await;
-            let print_info = guard.as_mut().unwrap();
-
-            let resend_content = print_info.get_line_by_index(number);
-            if resend_content.is_none() {
-                distributor.send(EventInfo {
-                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                        state: BridgeState::ERRORED,
-                        description: StateDescription::Error { message: "Requested resend message is not found in gcode cache\nStopping print".to_string() },
-                    }),
-                }).expect("Cannot send message");
-                return;
-            }
-            let resend_content = resend_content.unwrap().clone();
-            print_info.set_line_number(number);
-            Parser::send_raw(
-                &distributor,
-                Message::new(resend_content.to_string(), Uuid::new_v4()),
-            );
-        } else if state == BridgeState::PRINTING && input.trim().starts_with("ok") {
-            let guard = print_info.lock().await;
-            if guard.is_some() {
-                Parser::handle_print(distributor, sender, guard);
-            }
-            Parser::send_output_to_web(distributor, input);
-        } else if state == BridgeState::PRINTING
-            && input
-                .trim()
-                .to_lowercase()
-                .starts_with("echo:busy: processing")
-        {
-            sleep(Duration::from_secs(1)).await;
-        } else if input.to_lowercase().starts_with("error") {
-            if input.starts_with("Error:Line Number is not Last Line Number+1,") {
-                return;
-            }
-            println!("[RECV][ERR] {}", input);
-            distributor
-                .send(EventInfo {
-                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                        state: BridgeState::ERRORED,
-                        description: crate::api_manager::models::StateDescription::Error {
-                            message: input.to_string(),
-                        },
-                    }),
-                })
-                .expect("Cannot update state");
-        } else {
-            Parser::send_output_to_web(distributor, input);
-        }
+        return BridgeAction::Continue;
     }
 
-    fn send_output_to_web(distributor: &Sender<EventInfo>, input: &String) {
-        distributor
-            .send(EventInfo {
-                event_type: EventType::Websocket(WebsocketEvents::TerminalRead {
-                    message: input.clone(),
-                }),
-            })
-            .expect("Cannot send message");
-    }
-
-    pub fn handle_print(
-        distributor: &Sender<EventInfo>,
-        sender: &Sender<EventInfo>,
-        mut print_info_guard: MutexGuard<Option<PrintInfo>>,
-    ) -> () {
-        loop {
-            let line = print_info_guard.as_mut().unwrap().get_next_line();
-
-            if line.is_none() {
-                distributor
-                    .send(EventInfo {
-                        event_type: EventType::Bridge(BridgeEvents::PrintEnd),
-                    })
-                    .expect("Cannot send message");
-                break;
-            }
-            let line = line.unwrap();
-            let info = print_info_guard.as_mut().unwrap();
-            let prev_progress = format!("{:.1}", info.progress());
-
-            info.add_bytes_sent(line.content().len() as u64);
-            let difference = format!("{:.1}", info.progress()).parse::<f64>().unwrap()
-                - prev_progress.parse::<f64>().unwrap();
-
-            if difference > 0.1 {
-                distributor
-                    .send(EventInfo {
-                        event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                            state: BridgeState::PRINTING,
-                            description: crate::api_manager::models::StateDescription::Print {
-                                filename: info.filename.to_string(),
-                                progress: info.progress(),
-                                start: info.start,
-                                end: info.end,
-                            },
-                        }),
-                    })
-                    .expect("Cannot send progress update");
-            }
-
-            let message = Parser::add_checksum(line.line_number(), line.content());
-
-            sender
-                .send(EventInfo {
-                    event_type: EventType::Bridge(BridgeEvents::TerminalSend {
-                        message,
-                        id: Uuid::new_v4(),
-                    }),
-                })
-                .expect("Cannot send file line");
-            break;
-        }
-    }
-
-    fn send_raw(distributor: &Sender<EventInfo>, message: Message) {
-        distributor
-            .send(EventInfo {
-                event_type: EventType::Bridge(BridgeEvents::TerminalSend {
-                    message: message.content.clone(),
-                    id: message.id,
-                }),
-            })
-            .expect("Cannot send message");
-        Parser::send_output_to_web(distributor, &message.content);
-    }
-
-    fn add_checksum(linenr: &usize, line: &str) -> String {
+    pub fn add_checksum(linenr: &usize, line: &str) -> String {
         let line = line.replace(" ", "");
         let line = format!("N{}{}", linenr, line);
         let mut cs: u8 = 0;
@@ -202,7 +43,7 @@ impl Parser {
         return format!("{}*{}", line, cs);
     }
 
-    fn handle_temperature_message(distributor: &Sender<EventInfo>, input: &String) -> () {
+    pub fn parse_temperature(input: &String) -> WebsocketEvents {
         let mut tools: Vec<TempInfo> = Vec::new();
 
         let mut bed: Option<TempInfo> = None;
@@ -234,16 +75,11 @@ impl Parser {
             let info = TempInfo::new_no_name(current_temp, target_temp);
             chamber = Some(info);
         }
-
-        distributor
-            .send(EventInfo {
-                event_type: EventType::Websocket(WebsocketEvents::TempUpdate {
-                    tools,
-                    bed,
-                    chamber,
-                }),
-            })
-            .expect("Cannot send temperature message");
+        return WebsocketEvents::TempUpdate {
+            tools,
+            bed,
+            chamber,
+        };
     }
 }
 
