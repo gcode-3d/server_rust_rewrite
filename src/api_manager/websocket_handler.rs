@@ -184,7 +184,7 @@ pub async fn check_incoming_messages(
                     close_socket(id, socket, CloseCode::Unsupported).await;
                 }
                 Err(_) => {
-                    close_socket(id, socket, CloseCode::Error).await;
+                    delete_queue.push(id.clone());
                 }
             }
         }
