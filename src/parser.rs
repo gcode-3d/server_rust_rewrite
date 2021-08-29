@@ -17,7 +17,7 @@ impl Parser {
         for response in responses {
             if RESEND.is_match(&response) {
                 return BridgeAction::Resend(
-                    RESEND.captures(&response).unwrap()[0]
+                    RESEND.captures(&response).unwrap()[1]
                         .parse::<usize>()
                         .unwrap(),
                 );

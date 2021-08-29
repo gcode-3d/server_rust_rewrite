@@ -100,8 +100,10 @@ impl Manager {
                         let state = self.state.clone();
                         self.bridge_thread = Some(spawn(async move {
                             let panic_sender_clone = dist_sender_clone.clone();
-                            std::panic::set_hook(Box::new(move |_| {
-                                
+                            std::panic::set_hook(Box::new(move |e| {
+                                println!("[BRIDGE][PANIC] {}", e);
+                                let msg = format!("{}", e);
+                                sentry::capture_message(&msg, sentry::Level::Error);
                                 panic_sender_clone.send(EventInfo { event_type: EventType::Bridge(BridgeEvents::StateUpdate {
                                     state: BridgeState::ERRORED,
                                     description: StateDescription::Error {

@@ -530,13 +530,14 @@ impl Bridge {
                                                 let line =
                                                     print_info.get_line_by_index(line_number);
                                                 if line.is_some() {
+                                                    let line = line.unwrap();
                                                     bridge_sender
                                                         .send(EventInfo {
                                                             event_type: EventType::Bridge(
                                                                 BridgeEvents::TerminalSend {
                                                                     message: Parser::add_checksum(
-                                                                        &line_number,
-                                                                        line.unwrap(),
+                                                                        line.line_number(),
+                                                                        line.content(),
                                                                     ),
                                                                     id: Uuid::new_v4(),
                                                                 },

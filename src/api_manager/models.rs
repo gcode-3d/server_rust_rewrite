@@ -293,16 +293,19 @@ impl PrintInfo {
             line_number: 0,
         }
     }
-    pub fn get_line_by_index(&self, index: usize) -> Option<&String> {
+    pub fn get_line_by_index(&self, index: usize) -> Option<Line> {
+        let content = self.get_line_content_by_index(index);
+        if content.is_none() {
+            return None;
+        }
+        return Some(Line::new(content.unwrap().clone(), index));
+    }
+    fn get_line_content_by_index(&self, index: usize) -> Option<&String> {
         return self.gcode.get(index);
     }
     pub fn get_next_line(&mut self) -> Option<Line> {
         let index = self.advance();
-        let line = self.get_line_by_index(index);
-        if line.is_none() {
-            return None;
-        }
-        return Some(Line::new(line.unwrap().clone(), index));
+        return self.get_line_by_index(index);
     }
     pub fn progress(&self) -> f64 {
         if self.filesize == 0 {
