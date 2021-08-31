@@ -22,6 +22,13 @@ impl Parser {
                         .unwrap(),
                 );
             }
+            if LINENR.is_match(&response) {
+                return BridgeAction::Continue(Some(
+                    LINENR.captures(&response).unwrap()[1]
+                        .parse::<usize>()
+                        .unwrap(),
+                ));
+            }
             if response.starts_with("error") {
                 if !response.starts_with("Error:Line Number is not Last Line Number+1, Last Line: ")
                 {
@@ -29,7 +36,7 @@ impl Parser {
                 }
             }
         }
-        return BridgeAction::Continue;
+        return BridgeAction::Continue(None);
     }
 
     pub fn add_checksum(linenr: &usize, line: &str) -> String {

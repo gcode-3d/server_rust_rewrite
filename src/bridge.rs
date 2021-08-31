@@ -427,7 +427,7 @@ impl Bridge {
                                     *collected_responses.lock().await = vec![];
                                     collected = "".to_string();
                                     match action {
-                                        BridgeAction::Continue => {
+                                        BridgeAction::Continue(line_number) => {
                                             let state = state.lock().await.state;
                                             if state.eq(&BridgeState::PRINTING) {
                                                 let mut guard = print_info.lock().await;
@@ -435,7 +435,14 @@ impl Bridge {
                                                     continue;
                                                 }
                                                 let print_info = guard.as_mut().unwrap();
-                                                let line = print_info.get_next_line();
+                                                let line;
+                                                if line_number.is_some() {
+                                                    line = print_info.get_line_by_index(
+                                                        line_number.unwrap_or(0),
+                                                    );
+                                                } else {
+                                                    line = print_info.get_next_line();
+                                                }
                                                 if line.is_none() {
                                                     cloned_dist
                                                         .send(EventInfo {
@@ -527,8 +534,21 @@ impl Bridge {
                                                     continue;
                                                 }
                                                 let print_info = guard.as_mut().unwrap();
+                                                print_info.report_resend();
+                                                if print_info.get_resend_ratio() > 0.1 {
+                                                    return cloned_dist.send(EventInfo {
+                                                        // TODO: replace this with a notification / setting to ignore this.
+                                                        event_type: EventType::Bridge(
+                                                            BridgeEvents::StateUpdate {
+                                                                state: BridgeState::ERRORED,
+                                                                description: StateDescription::Error {message: "Resend ratio went above 10%.\n Consider checking your connection".to_string()},
+                                                            },
+                                                        ),
+                                                    }).expect("Cannot send message");
+                                                }
                                                 let line =
                                                     print_info.get_line_by_index(line_number);
+                                                print_info.set_line_number(line_number);
                                                 if line.is_some() {
                                                     let line = line.unwrap();
                                                     bridge_sender

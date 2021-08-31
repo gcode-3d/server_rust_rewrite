@@ -272,6 +272,7 @@ pub struct PrintInfo {
     pub start: DateTime<Utc>,
     pub end: Option<DateTime<Utc>>,
     line_number: usize,
+    resend_amount: usize,
 }
 
 impl PrintInfo {
@@ -291,7 +292,14 @@ impl PrintInfo {
             start,
             end: None,
             line_number: 0,
+            resend_amount: 0,
         }
+    }
+    pub fn report_resend(&mut self) {
+        self.resend_amount += 1;
+    }
+    pub fn get_resend_ratio(&self) -> f32 {
+        return (self.resend_amount as f32 / self.gcode.len() as f32) * 100.0;
     }
     pub fn get_line_by_index(&self, index: usize) -> Option<Line> {
         let content = self.get_line_content_by_index(index);
@@ -306,6 +314,12 @@ impl PrintInfo {
     pub fn get_next_line(&mut self) -> Option<Line> {
         let index = self.advance();
         return self.get_line_by_index(index);
+    }
+    pub fn set_line_number(&mut self, line_number: usize) {
+        if line_number > self.gcode.len() + 1 {
+            panic!("Cannot set line number out of bounds");
+        }
+        self.line_number = line_number;
     }
     pub fn progress(&self) -> f64 {
         if self.filesize == 0 {
@@ -388,7 +402,7 @@ impl Message {
 
 #[derive(Clone, Debug)]
 pub enum BridgeAction {
-    Continue,
+    Continue(Option<usize>),
     Error,
     Resend(usize),
 }
@@ -396,7 +410,13 @@ pub enum BridgeAction {
 impl std::fmt::Display for BridgeAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BridgeAction::Continue => write!(f, "Continue"),
+            BridgeAction::Continue(line) => {
+                if line.is_some() {
+                    write!(f, "Continue with N{}", line.unwrap_or(0))
+                } else {
+                    write!(f, "Continue")
+                }
+            }
             BridgeAction::Error => write!(f, "Error"),
             BridgeAction::Resend(line) => {
                 write!(f, "Resend N{}", line)
