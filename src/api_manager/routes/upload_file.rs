@@ -1,3 +1,13 @@
+/*
+    Upload a .gcode file to the files directory.
+
+    POST /api/files
+    multipart/form-data
+
+    Permission: files.edit
+    State: -
+*/
+
 use std::{
     borrow::Borrow,
     fs::{self, File},

@@ -1,3 +1,11 @@
+/*
+    Returns a simple response to test if online.
+
+    GET /api/ping
+
+    Permission: -
+    State: -
+*/
 use hyper::{header, Body, Request, Response};
 
 pub const METHODS: &str = "GET";

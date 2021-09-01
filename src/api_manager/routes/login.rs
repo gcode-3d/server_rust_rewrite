@@ -1,3 +1,18 @@
+/*
+    Validates credentials and exchanges for a token.
+
+    POST /api/login
+
+    Body: (json)
+        username: String
+        password: String
+        remember: Boolean
+
+
+    Permission: -
+    State: -
+*/
+
 use chrono::{Duration, Utc};
 use hyper::{
     body::{self},

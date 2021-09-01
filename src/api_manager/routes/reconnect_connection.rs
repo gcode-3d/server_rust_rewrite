@@ -1,3 +1,13 @@
+/*
+    Sends a disconnect, and after a second a connect attempt event to the bridge.
+
+    POST /api/connection
+
+
+    Permission: print_state.edit
+    State: Connected | Printing
+*/
+
 use std::time::Duration;
 
 use crossbeam_channel::Sender;

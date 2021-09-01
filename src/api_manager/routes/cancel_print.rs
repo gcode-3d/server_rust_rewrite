@@ -1,3 +1,12 @@
+/*
+    Send a print end event to the bridge.
+
+    DELETE /api/print
+
+    Permission: print_state.edit
+    State: PRINTING
+*/
+
 use crossbeam_channel::Sender;
 use hyper::{header, Body, Response};
 

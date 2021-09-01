@@ -277,7 +277,12 @@ async fn handle_route(
         if !permissions.edit_connection() {
             return unauthorized_response();
         }
-        return routes::create_connection::handler(request, distributor).await;
+        return routes::create_connection::handler(
+            request,
+            distributor,
+            state.lock().await.clone(),
+        )
+        .await;
     }
 
     if request.method().eq(&Method::DELETE) && path.eq(routes::disconnect_connection::PATH) {
