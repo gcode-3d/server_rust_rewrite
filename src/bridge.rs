@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use lazy_static::lazy_static;
 use regex::Regex;
-use serialport;
+use serialport::{self, SerialPort};
 use std::{collections::VecDeque, io::Write, sync::Arc, time::Duration};
 use tokio::{spawn, sync::Mutex, task::yield_now, time::sleep};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ pub struct Bridge {
     baudrate: u32,
     state: Arc<Mutex<StateWrapper>>,
     print_info: Arc<Mutex<Option<PrintInfo>>>,
-    distibutor: Sender<EventInfo>,
+    distributor: Sender<EventInfo>,
     sender: Sender<EventInfo>,
     receiver: Receiver<EventInfo>,
     message_queue: Arc<Mutex<VecDeque<Message>>>,
@@ -61,7 +61,7 @@ impl Bridge {
             baudrate,
             state,
             print_info: Arc::new(Mutex::new(None)),
-            distibutor,
+            distributor: distibutor,
             sender,
             receiver,
             message_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -76,7 +76,8 @@ impl Bridge {
             state: BridgeState::CONNECTING,
             description: StateDescription::None,
         };
-        self.distibutor
+
+        self.distributor
             .send(EventInfo {
                 event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
                     state: BridgeState::CONNECTING,
@@ -86,12 +87,13 @@ impl Bridge {
             .expect("cannot send message");
 
         let port_result = serialport::new(&self.address, self.baudrate).open();
+
         if port_result.is_err() {
             let err = port_result.err().unwrap();
 
             match err.kind {
                 serialport::ErrorKind::NoDevice => {
-                    self.distibutor
+                    self.distributor
                         .send(EventInfo {
                             event_type: EventType::Bridge(
                                 bridge::BridgeEvents::ConnectionCreateError {
@@ -103,7 +105,7 @@ impl Bridge {
                 }
                 serialport::ErrorKind::InvalidInput => todo!("INV. INPUT"),
                 serialport::ErrorKind::Unknown => {
-                    self.distibutor
+                    self.distributor
                         .send(EventInfo {
                             event_type: EventType::Bridge(
                                 bridge::BridgeEvents::ConnectionCreateError {
@@ -113,8 +115,9 @@ impl Bridge {
                         })
                         .expect("cannot send message");
                 }
+
                 serialport::ErrorKind::Io(_) => {
-                    self.distibutor
+                    self.distributor
                         .send(EventInfo {
                             event_type: EventType::Bridge(
                                 bridge::BridgeEvents::ConnectionCreateError {
@@ -127,10 +130,207 @@ impl Bridge {
             }
             return;
         }
-        let distributor = self.distibutor.clone();
-        let state = self.state.clone();
+
+        Bridge::spawn_timeout(10, self.distributor.clone(), self.state.clone());
+
+        let mut port = port_result.unwrap();
+
+        port.set_timeout(Duration::from_millis(10))
+            .expect("Cannot set timeout on port");
+        let incoming = port;
+        let mut outgoing = incoming.try_clone().expect("Cannot clone serialport");
+        Bridge::spawn_event_listener(
+            incoming.try_clone().expect("Cannot clone serialport"),
+            self.receiver.clone(),
+            self.distributor.clone(),
+            self.print_info.clone(),
+            self.state.clone(),
+            is_canceled.clone(),
+            self.message_queue.clone(),
+            self.ready.clone(),
+        );
+        Bridge::spawn_bridge_serial_reader(
+            self.distributor.clone(),
+            self.sender.clone(),
+            self.print_info.clone(),
+            self.state.clone(),
+            is_canceled.clone(),
+            self.message_queue.clone(),
+            self.ready.clone(),
+            incoming,
+        );
+
+        let result = outgoing.write(b"M115\n");
+        if result.is_ok() {
+            outgoing.flush().expect("FLUSH FAIL");
+        } else {
+            eprintln!("[BRIDGE] Write errored: {}", result.unwrap_err())
+        }
+    }
+
+    async fn handle_ok_response(
+        distributor: &Sender<EventInfo>,
+        bridge_sender: &Sender<EventInfo>,
+        collected_responses: &Mutex<Vec<String>>,
+        collected: &mut String,
+        state: &Mutex<StateWrapper>,
+        print_info: &Mutex<Option<PrintInfo>>,
+        queue: &Mutex<VecDeque<Message>>,
+        ready: &Mutex<bool>,
+    ) {
+        let action = Parser::parse_responses(collected_responses.lock().await.clone());
+        *collected_responses.lock().await = vec![];
+        *collected = "".to_string();
+        match action {
+            BridgeAction::Continue(line_number) => {
+                let state = state.lock().await.state;
+                if state.eq(&BridgeState::PRINTING) {
+                    let mut guard = print_info.lock().await;
+                    if guard.is_none() {
+                        return;
+                    }
+                    let print_info = guard.as_mut().unwrap();
+                    let line;
+                    if line_number.is_some() {
+                        line = print_info.get_line_by_index(line_number.unwrap_or(0));
+                    } else {
+                        line = print_info.get_next_line();
+                    }
+                    if line.is_none() {
+                        distributor
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(BridgeEvents::PrintEnd),
+                            })
+                            .expect("Cannot send message");
+                        return;
+                    }
+                    let line = line.unwrap();
+                    let prev_progress = format!("{:.1}", print_info.progress());
+
+                    print_info.add_bytes_sent(line.content().len() as u64);
+                    let difference = format!("{:.1}", print_info.progress())
+                        .parse::<f64>()
+                        .unwrap()
+                        - prev_progress.parse::<f64>().unwrap();
+
+                    if difference > 0.1 {
+                        distributor
+                            .send(EventInfo {
+                                event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
+                                    state: BridgeState::PRINTING,
+                                    description:
+                                        crate::api_manager::models::StateDescription::Print {
+                                            filename: print_info.filename.to_string(),
+                                            progress: print_info.progress(),
+                                            start: print_info.start,
+                                            end: print_info.end,
+                                        },
+                                }),
+                            })
+                            .expect("Cannot send progress update");
+                    }
+                    bridge_sender
+                        .send(EventInfo {
+                            event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                                message: Parser::add_checksum(line.line_number(), line.content()),
+                                id: Uuid::new_v4(),
+                            }),
+                        })
+                        .expect("Cannot send message");
+                    return;
+                } else if state.eq(&BridgeState::CONNECTED) {
+                    let message = queue.lock().await.pop_front();
+
+                    if message.is_some() {
+                        let message = message.unwrap();
+                        bridge_sender
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                                    message: message.content,
+                                    id: message.id,
+                                }),
+                            })
+                            .expect("Cannot send message");
+                    } else {
+                        *ready.lock().await = true;
+                    }
+                }
+            }
+
+            BridgeAction::Error => {
+                distributor
+                    .send(EventInfo {
+                        event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                            state: BridgeState::ERRORED,
+                            description: StateDescription::Error {
+                                message:
+                                    "Bridge encountered unknown error.\n See terminal for more info"
+                                        .to_string(),
+                            },
+                        }),
+                    })
+                    .expect("Cannot send message");
+            }
+
+            BridgeAction::Resend(line_number) => {
+                if state.lock().await.state.eq(&BridgeState::PRINTING) {
+                    let mut guard = print_info.lock().await;
+                    if guard.is_none() {
+                        return;
+                    }
+                    let print_info = guard.as_mut().unwrap();
+                    print_info.report_resend();
+                    if print_info.get_resend_ratio() > 0.1 {
+                        return distributor.send(EventInfo {
+                            // TODO: replace this with a notification / setting to ignore this.
+                            event_type: EventType::Bridge(
+                                BridgeEvents::StateUpdate {
+                                    state: BridgeState::ERRORED,
+                                    description: StateDescription::Error {message: "Resend ratio went above 10%.\n Consider checking your connection".to_string()},
+                                },
+                            ),
+                        }).expect("Cannot send message");
+                    }
+                    let line = print_info.get_line_by_index(line_number);
+                    print_info.set_line_number(line_number);
+                    if line.is_some() {
+                        let line = line.unwrap();
+                        bridge_sender
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                                    message: Parser::add_checksum(
+                                        line.line_number(),
+                                        line.content(),
+                                    ),
+                                    id: Uuid::new_v4(),
+                                }),
+                            })
+                            .expect("Cannot send message");
+                    } else {
+                        distributor
+                            .send(EventInfo {
+                                event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                    state: BridgeState::ERRORED,
+                                    description: StateDescription::Error {
+                                        message: "Cannot resend line".to_string(),
+                                    },
+                                }),
+                            })
+                            .expect("Cannot send message");
+                    }
+                }
+                return;
+            }
+        };
+    }
+
+    fn spawn_timeout(
+        timeout_amount: u64,
+        distributor: Sender<EventInfo>,
+        state: Arc<Mutex<StateWrapper>>,
+    ) {
         spawn(async move {
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(timeout_amount)).await;
             if state.lock().await.state == BridgeState::CONNECTING {
                 distributor
                     .send(EventInfo {
@@ -144,145 +344,18 @@ impl Bridge {
                     .expect("Cannot send message");
             }
         });
+    }
 
-        let mut port = port_result.unwrap();
-
-        port.set_timeout(Duration::from_millis(10))
-            .expect("Cannot set timeout on port");
-        let mut incoming = port;
-        let mut outgoing = incoming.try_clone().expect("Cannot clone serialport");
-        let outgoing_for_listener = incoming.try_clone().expect("Cannot clone serialport");
-        let receiver = self.receiver.clone();
-        let print_info = self.print_info.clone();
-        let distributor = self.distibutor.clone();
-        let current_state = self.state.clone();
-        let canceled = is_canceled.clone();
-        let queue = self.message_queue.clone();
-        let ready = self.ready.clone();
-        spawn(async move {
-            let mut outgoing = outgoing_for_listener;
-
-            println!(
-                "[BRIDGE] connected to port {} with {} baudrate",
-                outgoing.as_ref().name().unwrap_or("UNNAMED".to_string()),
-                outgoing.as_ref().baud_rate().unwrap()
-            );
-            loop {
-                if let Ok(event) = receiver.try_recv() {
-                    match event.event_type {
-                        EventType::KILL => {
-                            drop(outgoing);
-                            *canceled.lock().await = true;
-                            break;
-                        }
-                        EventType::Bridge(BridgeEvents::TerminalSend { mut message, id }) => {
-                            if !message.ends_with("\n") {
-                                message = format!("{}\n", message);
-                            }
-                            if current_state.lock().await.state.eq(&BridgeState::CONNECTED) {
-                                if *ready.lock().await == false {
-                                    let mut guard = queue.lock().await;
-                                    guard.push_back(Message::new(message, id));
-                                    continue;
-                                } else {
-                                    *ready.lock().await = true;
-                                }
-                            }
-                            let result = outgoing.write(message.as_bytes());
-                            if result.is_err() {
-                                let err = result.unwrap_err();
-                                eprintln!("[BRIDGE][ERROR] {}", err);
-                                distributor
-                                    .send(EventInfo {
-                                        event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                            state: BridgeState::ERRORED,
-                                            description:
-                                                api_manager::models::StateDescription::Error {
-                                                    message: err.to_string(),
-                                                },
-                                        }),
-                                    })
-                                    .expect("Cannot send message");
-                            } else {
-                                println!("[BRIDGE][SEND] {}", message);
-                                distributor
-                                    .send(EventInfo {
-                                        event_type: EventType::Websocket(
-                                            WebsocketEvents::TerminalSend { message, id },
-                                        ),
-                                    })
-                                    .expect("Cannot send message");
-                            }
-                        }
-                        EventType::Bridge(BridgeEvents::PrintEnd) => {
-                            if current_state.lock().await.state.ne(&BridgeState::PRINTING) {
-                                return ();
-                            }
-                            *print_info.lock().await = None;
-                            distributor
-                                .send(EventInfo {
-                                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                        state: BridgeState::CONNECTED,
-                                        description: api_manager::models::StateDescription::None,
-                                    }),
-                                })
-                                .expect("Cannot send message");
-                        }
-                        EventType::Bridge(BridgeEvents::PrintStart { info }) => {
-                            if current_state.lock().await.state.ne(&BridgeState::CONNECTED) {
-                                return ();
-                            }
-                            let mut guard = print_info.lock().await;
-                            let filename = info.filename.clone();
-                            let progress = info.progress();
-                            let start = info.start.clone();
-                            let end = info.end.clone();
-
-                            *guard = Some(info);
-                            distributor
-                                .send(EventInfo {
-                                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                                        state: BridgeState::PRINTING,
-                                        description: api_manager::models::StateDescription::Print {
-                                            filename,
-                                            progress,
-                                            start,
-                                            end,
-                                        },
-                                    }),
-                                })
-                                .expect("Cannot send message");
-
-                            distributor
-                                .send(EventInfo {
-                                    event_type: EventType::Bridge(BridgeEvents::TerminalSend {
-                                        message: "M110 N0".to_string(),
-                                        id: Uuid::new_v4(),
-                                    }),
-                                })
-                                .expect("Cannot send first line");
-                        }
-                        EventType::Bridge(BridgeEvents::StateUpdate {
-                            state,
-                            description: _,
-                        }) if state == BridgeState::CONNECTED => {
-                            *ready.lock().await = true;
-                        }
-                        _ => (),
-                    }
-                } else {
-                    yield_now().await;
-                }
-            }
-        });
-
-        let distributor = self.distibutor.clone();
-        let print_info = self.print_info.clone();
-        let state = self.state.clone();
-        let canceled = is_canceled.clone();
-        let queue = self.message_queue.clone();
-        let bridge_sender = self.sender.clone();
-        let ready = self.ready.clone();
+    fn spawn_bridge_serial_reader(
+        distributor: Sender<EventInfo>,
+        bridge_sender: Sender<EventInfo>,
+        print_info: Arc<Mutex<Option<PrintInfo>>>,
+        state: Arc<Mutex<StateWrapper>>,
+        canceled: Arc<Mutex<bool>>,
+        queue: Arc<Mutex<VecDeque<Message>>>,
+        ready: Arc<Mutex<bool>>,
+        mut incoming: Box<dyn SerialPort>,
+    ) {
         spawn(async move {
             let mut serial_buf: Vec<u8> = vec![0; 1];
             let mut collected = String::new();
@@ -421,170 +494,17 @@ impl Bridge {
                                 }
 
                                 if collected.starts_with("ok") {
-                                    let action = Parser::parse_responses(
-                                        collected_responses.lock().await.clone(),
-                                    );
-                                    *collected_responses.lock().await = vec![];
-                                    collected = "".to_string();
-                                    match action {
-                                        BridgeAction::Continue(line_number) => {
-                                            let state = state.lock().await.state;
-                                            if state.eq(&BridgeState::PRINTING) {
-                                                let mut guard = print_info.lock().await;
-                                                if guard.is_none() {
-                                                    continue;
-                                                }
-                                                let print_info = guard.as_mut().unwrap();
-                                                let line;
-                                                if line_number.is_some() {
-                                                    line = print_info.get_line_by_index(
-                                                        line_number.unwrap_or(0),
-                                                    );
-                                                } else {
-                                                    line = print_info.get_next_line();
-                                                }
-                                                if line.is_none() {
-                                                    cloned_dist
-                                                        .send(EventInfo {
-                                                            event_type: EventType::Bridge(
-                                                                BridgeEvents::PrintEnd,
-                                                            ),
-                                                        })
-                                                        .expect("Cannot send message");
-                                                    continue;
-                                                }
-                                                let line = line.unwrap();
-                                                let prev_progress =
-                                                    format!("{:.1}", print_info.progress());
-
-                                                print_info
-                                                    .add_bytes_sent(line.content().len() as u64);
-                                                let difference =
-                                                    format!("{:.1}", print_info.progress())
-                                                        .parse::<f64>()
-                                                        .unwrap()
-                                                        - prev_progress.parse::<f64>().unwrap();
-
-                                                if difference > 0.1 {
-                                                    cloned_dist
-                                                        .send(EventInfo {
-                                                            event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                                                                state: BridgeState::PRINTING,
-                                                                description: crate::api_manager::models::StateDescription::Print {
-                                                                    filename: print_info.filename.to_string(),
-                                                                    progress: print_info.progress(),
-                                                                    start: print_info.start,
-                                                                    end: print_info.end,
-                                                                },
-                                                            }),
-                                                        })
-                                                        .expect("Cannot send progress update");
-                                                }
-                                                bridge_sender
-                                                    .send(EventInfo {
-                                                        event_type: EventType::Bridge(
-                                                            BridgeEvents::TerminalSend {
-                                                                message: Parser::add_checksum(
-                                                                    line.line_number(),
-                                                                    line.content(),
-                                                                ),
-                                                                id: Uuid::new_v4(),
-                                                            },
-                                                        ),
-                                                    })
-                                                    .expect("Cannot send message");
-                                                continue;
-                                            } else if state.eq(&BridgeState::CONNECTED) {
-                                                let message = queue.lock().await.pop_front();
-
-                                                if message.is_some() {
-                                                    let message = message.unwrap();
-                                                    bridge_sender
-                                                        .send(EventInfo {
-                                                            event_type: EventType::Bridge(
-                                                                BridgeEvents::TerminalSend {
-                                                                    message: message.content,
-                                                                    id: message.id,
-                                                                },
-                                                            ),
-                                                        })
-                                                        .expect("Cannot send message");
-                                                } else {
-                                                    *ready.lock().await = true;
-                                                }
-                                                continue;
-                                            }
-                                        }
-
-                                        BridgeAction::Error => {
-                                            cloned_dist.send(EventInfo {
-                                                event_type: EventType::Bridge(
-                                                    BridgeEvents::StateUpdate {
-                                                        state: BridgeState::ERRORED,
-                                                        description: StateDescription::Error {message: "Bridge encountered unknown error.\n See terminal for more info".to_string()},
-                                                    },
-                                                ),
-                                            }).expect("Cannot send message");
-                                        }
-
-                                        BridgeAction::Resend(line_number) => {
-                                            if state.lock().await.state.eq(&BridgeState::PRINTING) {
-                                                let mut guard = print_info.lock().await;
-                                                if guard.is_none() {
-                                                    continue;
-                                                }
-                                                let print_info = guard.as_mut().unwrap();
-                                                print_info.report_resend();
-                                                if print_info.get_resend_ratio() > 0.1 {
-                                                    return cloned_dist.send(EventInfo {
-                                                        // TODO: replace this with a notification / setting to ignore this.
-                                                        event_type: EventType::Bridge(
-                                                            BridgeEvents::StateUpdate {
-                                                                state: BridgeState::ERRORED,
-                                                                description: StateDescription::Error {message: "Resend ratio went above 10%.\n Consider checking your connection".to_string()},
-                                                            },
-                                                        ),
-                                                    }).expect("Cannot send message");
-                                                }
-                                                let line =
-                                                    print_info.get_line_by_index(line_number);
-                                                print_info.set_line_number(line_number);
-                                                if line.is_some() {
-                                                    let line = line.unwrap();
-                                                    bridge_sender
-                                                        .send(EventInfo {
-                                                            event_type: EventType::Bridge(
-                                                                BridgeEvents::TerminalSend {
-                                                                    message: Parser::add_checksum(
-                                                                        line.line_number(),
-                                                                        line.content(),
-                                                                    ),
-                                                                    id: Uuid::new_v4(),
-                                                                },
-                                                            ),
-                                                        })
-                                                        .expect("Cannot send message");
-                                                } else {
-                                                    cloned_dist
-                                                        .send(EventInfo {
-                                                            event_type: EventType::Bridge(
-                                                                BridgeEvents::StateUpdate {
-                                                                    state: BridgeState::ERRORED,
-                                                                    description:
-                                                                        StateDescription::Error {
-                                                                            message:
-                                                                                "Cannot resend line"
-                                                                                    .to_string(),
-                                                                        },
-                                                                },
-                                                            ),
-                                                        })
-                                                        .expect("Cannot send message");
-                                                }
-                                            }
-                                            continue;
-                                        }
-                                    };
+                                    Bridge::handle_ok_response(
+                                        &cloned_dist,
+                                        &bridge_sender,
+                                        &collected_responses,
+                                        &mut collected,
+                                        &state,
+                                        &print_info,
+                                        &queue,
+                                        &ready,
+                                    )
+                                    .await;
                                 }
                             }
                             collected = String::new();
@@ -596,7 +516,7 @@ impl Bridge {
                     }
                     Err(ref e) => match e.kind() {
                         std::io::ErrorKind::TimedOut => {
-                            if *is_canceled.lock().await {
+                            if *canceled.lock().await {
                                 break;
                             } else {
                                 yield_now().await;
@@ -621,7 +541,7 @@ impl Bridge {
                             }
                         }
                         _ => {
-                            if *is_canceled.lock().await {
+                            if *canceled.lock().await {
                                 break;
                             }
 
@@ -642,11 +562,131 @@ impl Bridge {
                 }
             }
         });
-        let result = outgoing.write(b"M115\n");
-        if result.is_ok() {
-            outgoing.flush().expect("FLUSH FAIL");
-        } else {
-            eprintln!("[BRIDGE] Write errored: {}", result.unwrap_err())
-        }
+    }
+
+    fn spawn_event_listener(
+        mut outgoing: Box<dyn SerialPort>,
+        receiver: Receiver<EventInfo>,
+        distributor: Sender<EventInfo>,
+        print_info: Arc<Mutex<Option<PrintInfo>>>,
+        state_info: Arc<Mutex<StateWrapper>>,
+        canceled: Arc<Mutex<bool>>,
+        queue: Arc<Mutex<VecDeque<Message>>>,
+        ready: Arc<Mutex<bool>>,
+    ) {
+        spawn(async move {
+            println!(
+                "[BRIDGE] Connecting to port {} with {} baudrate",
+                outgoing.as_ref().name().unwrap_or("UNNAMED".to_string()),
+                outgoing.as_ref().baud_rate().unwrap()
+            );
+            loop {
+                if let Ok(event) = receiver.try_recv() {
+                    match event.event_type {
+                        EventType::KILL => {
+                            drop(outgoing);
+                            *canceled.lock().await = true;
+                            break;
+                        }
+                        EventType::Bridge(BridgeEvents::TerminalSend { mut message, id }) => {
+                            if !message.ends_with("\n") {
+                                message = format!("{}\n", message);
+                            }
+                            if state_info.lock().await.state.eq(&BridgeState::CONNECTED) {
+                                if *ready.lock().await == false {
+                                    let mut guard = queue.lock().await;
+                                    guard.push_back(Message::new(message, id));
+                                    continue;
+                                } else {
+                                    *ready.lock().await = true;
+                                }
+                            }
+                            let result = outgoing.write(message.as_bytes());
+                            if result.is_err() {
+                                let err = result.unwrap_err();
+                                eprintln!("[BRIDGE][ERROR] {}", err);
+                                distributor
+                                    .send(EventInfo {
+                                        event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                            state: BridgeState::ERRORED,
+                                            description:
+                                                api_manager::models::StateDescription::Error {
+                                                    message: err.to_string(),
+                                                },
+                                        }),
+                                    })
+                                    .expect("Cannot send message");
+                            } else {
+                                println!("[BRIDGE][SEND] {}", message);
+                                distributor
+                                    .send(EventInfo {
+                                        event_type: EventType::Websocket(
+                                            WebsocketEvents::TerminalSend { message, id },
+                                        ),
+                                    })
+                                    .expect("Cannot send message");
+                            }
+                        }
+                        EventType::Bridge(BridgeEvents::PrintEnd) => {
+                            if state_info.lock().await.state.ne(&BridgeState::PRINTING) {
+                                return ();
+                            }
+                            *print_info.lock().await = None;
+                            distributor
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                        state: BridgeState::CONNECTED,
+                                        description: api_manager::models::StateDescription::None,
+                                    }),
+                                })
+                                .expect("Cannot send message");
+                        }
+                        EventType::Bridge(BridgeEvents::PrintStart { info }) => {
+                            if state_info.lock().await.state.ne(&BridgeState::CONNECTED) {
+                                return ();
+                            }
+                            let mut guard = print_info.lock().await;
+                            let filename = info.filename.clone();
+                            let progress = info.progress();
+                            let start = info.start.clone();
+                            let end = info.end.clone();
+
+                            *guard = Some(info);
+                            distributor
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                        state: BridgeState::PRINTING,
+                                        description: api_manager::models::StateDescription::Print {
+                                            filename,
+                                            progress,
+                                            start,
+                                            end,
+                                        },
+                                    }),
+                                })
+                                .expect("Cannot send message");
+
+                            distributor
+                                .send(EventInfo {
+                                    event_type: EventType::Bridge(BridgeEvents::TerminalSend {
+                                        message: "M110 N0".to_string(),
+                                        id: Uuid::new_v4(),
+                                    }),
+                                })
+                                .expect("Cannot send first line");
+                        }
+                        EventType::Bridge(BridgeEvents::StateUpdate {
+                            state,
+                            description: _,
+                        }) if state == BridgeState::CONNECTED => {
+                            *ready.lock().await = true;
+                        }
+                        _ => (),
+                    }
+                } else {
+                    yield_now().await;
+                }
+            }
+        });
     }
 }
