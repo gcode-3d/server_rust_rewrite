@@ -307,7 +307,7 @@ async fn handle_route(
         if !permissions.print_state_edit() {
             return unauthorized_response();
         }
-        return routes::cancel_print::handler(state, distributor);
+        return routes::cancel_print::handler(state.lock().await.clone(), distributor);
     }
 
     if request.method().eq(&Method::POST) && path.eq(routes::terminal::PATH) {

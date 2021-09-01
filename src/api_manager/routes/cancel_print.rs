@@ -9,6 +9,7 @@ use crate::{
     bridge::BridgeState,
 };
 
+#[allow(dead_code)]
 pub const METHODS: &str = "DELETE";
 pub const PATH: &str = "/api/print/";
 
