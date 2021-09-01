@@ -1,3 +1,4 @@
+pub mod cancel_print;
 pub mod create_connection;
 pub mod disconnect_connection;
 pub mod dsn;

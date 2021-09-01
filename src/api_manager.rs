@@ -303,6 +303,13 @@ async fn handle_route(
         return routes::start_print::handler(request, distributor, state).await;
     }
 
+    if request.method().eq(&Method::DELETE) && path.eq(routes::cancel_print::PATH) {
+        if !permissions.print_state_edit() {
+            return unauthorized_response();
+        }
+        return routes::cancel_print::handler(state, distributor);
+    }
+
     if request.method().eq(&Method::POST) && path.eq(routes::terminal::PATH) {
         if !permissions.terminal_send() {
             return unauthorized_response();
