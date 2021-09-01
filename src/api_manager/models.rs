@@ -311,10 +311,7 @@ impl PrintInfo {
     fn get_line_content_by_index(&self, index: usize) -> Option<&String> {
         return self.gcode.get(index);
     }
-    pub fn get_next_line(&mut self) -> Option<Line> {
-        let index = self.advance();
-        return self.get_line_by_index(index);
-    }
+
     pub fn set_line_number(&mut self, line_number: usize) {
         if line_number > self.gcode.len() + 1 {
             panic!("Cannot set line number out of bounds");
@@ -334,8 +331,8 @@ impl PrintInfo {
         }
         self.data_sent = self.data_sent + bytes;
     }
-    pub fn advance(&mut self) -> usize {
-        self.line_number += 1;
+
+    pub fn line_number(&mut self) -> usize {
         return self.line_number;
     }
 }

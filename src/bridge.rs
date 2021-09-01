@@ -195,6 +195,9 @@ impl Bridge {
                         let line_number = line_number.unwrap();
                         line = print_info.get_line_by_index(line_number + 1);
                         print_info.set_line_number(line_number);
+                    } else if print_info.line_number() == 0 {
+                        line = print_info.get_line_by_index(1);
+                        print_info.set_line_number(1);
                     } else {
                         // skip line as it's probably just some unrelated echo without line nr.
                         return;
