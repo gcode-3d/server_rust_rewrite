@@ -192,7 +192,9 @@ impl Bridge {
                     let print_info = guard.as_mut().unwrap();
                     let line;
                     if line_number.is_some() {
-                        line = print_info.get_line_by_index(line_number.unwrap() + 1);
+                        let line_number = line_number.unwrap();
+                        line = print_info.get_line_by_index(line_number + 1);
+                        print_info.set_line_number(line_number);
                     } else {
                         line = print_info.get_next_line();
                     }
