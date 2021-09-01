@@ -1,3 +1,12 @@
+/*
+    List the .gcode files stored in the files folder.
+
+    GET /api/files
+
+    Permission: file.access
+    State: -
+*/
+
 use std::fs;
 
 use chrono::{DateTime, Utc};

@@ -1,12 +1,36 @@
+/*
+    Send a event to the bridge to start creating connection.
+
+    PUT /api/connection
+
+    Permission: connection.edit
+    State: Disconnected | Errored
+*/
+
 use crossbeam_channel::Sender;
 use hyper::{header, Body, Request, Response};
 use sqlx::{Connection, SqliteConnection};
 
-use crate::api_manager::models::{BridgeEvents, EventInfo, EventType, SettingRow};
+use crate::{
+    api_manager::{
+        models::{BridgeEvents, EventInfo, EventType, SettingRow, StateWrapper},
+        responses::forbidden_response,
+    },
+    bridge::BridgeState,
+};
 pub const METHODS: &str = "PUT, DELETE, POST";
 pub const PATH: &str = "/api/connection";
 
-pub async fn handler(_request: Request<Body>, distributor: Sender<EventInfo>) -> Response<Body> {
+pub async fn handler(
+    _request: Request<Body>,
+    distributor: Sender<EventInfo>,
+    state_info: StateWrapper,
+) -> Response<Body> {
+    if !(state_info.state == BridgeState::DISCONNECTED || state_info.state == BridgeState::ERRORED)
+    {
+        return forbidden_response();
+    }
+
     let result = async {
         let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
         let query = sqlx::query_as::<_, SettingRow>("select * from settings");

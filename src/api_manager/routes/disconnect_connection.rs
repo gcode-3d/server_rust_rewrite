@@ -1,3 +1,12 @@
+/*
+    Send a event to the bridge to start disconnecting connection.
+
+    DELETE /api/connection
+
+    Permission: connection.edit
+    State: Connected | Printing
+*/
+
 use crossbeam_channel::Sender;
 use hyper::{header, Body, Response};
 use serde_json::json;

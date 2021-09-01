@@ -1,3 +1,12 @@
+/*
+    Send a print end event to the bridge.
+
+    DELETE /api/print
+
+    Permission: print_state.edit
+    State: PRINTING
+*/
+
 use crossbeam_channel::Sender;
 use hyper::{header, Body, Response};
 
@@ -8,7 +17,7 @@ use crate::{
     },
     bridge::BridgeState,
 };
-
+#[allow(dead_code)]
 pub const METHODS: &str = "DELETE";
 pub const PATH: &str = "/api/print/";
 

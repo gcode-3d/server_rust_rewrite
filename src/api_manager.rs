@@ -277,7 +277,12 @@ async fn handle_route(
         if !permissions.edit_connection() {
             return unauthorized_response();
         }
-        return routes::create_connection::handler(request, distributor).await;
+        return routes::create_connection::handler(
+            request,
+            distributor,
+            state.lock().await.clone(),
+        )
+        .await;
     }
 
     if request.method().eq(&Method::DELETE) && path.eq(routes::disconnect_connection::PATH) {
@@ -307,7 +312,7 @@ async fn handle_route(
         if !permissions.print_state_edit() {
             return unauthorized_response();
         }
-        return routes::cancel_print::handler(state, distributor);
+        return routes::cancel_print::handler(state.lock().await.clone(), distributor);
     }
 
     if request.method().eq(&Method::POST) && path.eq(routes::terminal::PATH) {

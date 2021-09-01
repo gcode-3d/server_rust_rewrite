@@ -1,3 +1,16 @@
+/*
+    Sends a message to the printer.
+
+    POST /api/terminal
+
+    Body: (json)
+        message: String
+
+
+    Permission: terminal
+    State: Connected
+*/
+
 use crate::{
     api_manager::{
         models::{BridgeEvents, EventInfo, EventType},

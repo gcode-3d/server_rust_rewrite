@@ -1,3 +1,12 @@
+/*
+    Returns the sentry dsn for localstorage.
+
+    GET /api/dsn
+
+    Permission: -
+    State: -
+*/
+
 use hyper::{header, Body, Response};
 use serde::Deserialize;
 use serde_json::json;

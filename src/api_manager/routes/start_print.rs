@@ -1,3 +1,17 @@
+/*
+    Reads a file from the files folder. Load it into memory.
+    Constructs a print info file and start a print
+
+    PUT /api/print
+
+    Body: (json)
+        printName: String
+
+
+    Permission: print_state.edit
+    State: Connected
+*/
+
 use std::{
     fs::File,
     io::{BufRead, BufReader},

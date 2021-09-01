@@ -1,3 +1,12 @@
+/*
+    Update the specified setting with the provided value.
+
+    POST /api/settings
+
+    Permission: settings.edit
+    State: -
+*/
+
 use hyper::{body, header, Body, Request, Response};
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};

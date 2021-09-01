@@ -1,3 +1,12 @@
+/*
+    List the settings values stored
+
+    GET /api/settings
+
+    Permission: -
+    State: -
+*/
+
 use hyper::{header, Body, Response};
 use serde_json::Value;
 use sqlx::{Connection, SqliteConnection};
@@ -15,7 +24,6 @@ pub async fn handler() -> Response<Body> {
         return server_error_response();
     }
 
-    // let mut json = String::new();
     let mut map = serde_json::Map::new();
     for row in result.unwrap() {
         if row.row_type == 0 {
