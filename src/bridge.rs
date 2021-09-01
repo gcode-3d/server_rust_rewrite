@@ -196,7 +196,8 @@ impl Bridge {
                         line = print_info.get_line_by_index(line_number + 1);
                         print_info.set_line_number(line_number);
                     } else {
-                        line = print_info.get_next_line();
+                        // skip line as it's probably just some unrelated echo without line nr.
+                        return;
                     }
                     if line.is_none() {
                         distributor
