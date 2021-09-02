@@ -64,7 +64,7 @@ impl Manager {
         spawn(async move {
             let _ = spawn(ApiManager::start(dist_sender_clone,  sockets_clone, state));
         });
-        self.connect_boot(&dist_sender).await;
+        self.connect_boot(dist_sender.clone(),self.state.clone()).await;
         let sockets_clone = sockets.clone();
         spawn (async move {
             loop{
@@ -429,7 +429,15 @@ impl Manager {
         Check if those settings are correctly set and autoboot is enabled.
         Try to send a connectionCreate event to the global dist sender.
     */
-    async fn connect_boot(&self, sender: &Sender<EventInfo>) {
+    async fn connect_boot(&self, sender: Sender<EventInfo>, state: Arc<Mutex<StateWrapper>>) {
+        let timeout_amount = 3;
+        spawn(async move {
+            sleep(Duration::from_secs(timeout_amount)).await;
+            if state.lock().await.state != BridgeState::DISCONNECTED {
+                return;
+            }
+                
+
         let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
         let query = sqlx::query_as::<_, SettingRow>(
                 "SELECT * FROM settings where id = 'B_startOnBoot' or id = 'S_devicePath' or id = 'N_deviceBaud'",
@@ -465,7 +473,8 @@ impl Manager {
                 }
             }
         }
-    }
+});
+}
 }
 
 async fn setup_db() {
