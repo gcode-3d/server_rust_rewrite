@@ -1,3 +1,4 @@
+use chrono::Utc;
 use crossbeam_channel::{Receiver, Sender};
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -637,6 +638,7 @@ impl Bridge {
                             if state_info.lock().await.state.ne(&BridgeState::PRINTING) {
                                 return ();
                             }
+                            Bridge::log_print_result(&mut *print_info.lock().await);
                             *print_info.lock().await = None;
                             distributor
                                 .send(EventInfo {
@@ -694,5 +696,31 @@ impl Bridge {
                 }
             }
         });
+    }
+    fn log_print_result(print_info: &mut Option<PrintInfo>) {
+        if print_info.is_none() {
+            return;
+        }
+        let print_info = print_info.as_mut().unwrap();
+        let duration = Utc::now() - print_info.start;
+        let days = duration.num_seconds() / 86400;
+        let hours = duration.num_seconds() % 86400 / 86400 * 24;
+        let minutes = (duration.num_seconds() / 60) % 60;
+        let seconds = duration.num_seconds() % 60;
+
+        let mut duration = format!("{}h {}m {}s", hours, minutes, seconds);
+        if days > 0 {
+            duration = format!("{}d {}", days, duration);
+        }
+        println!(
+            "[BRIDGE][PRINT][INFO] Finished print {} in {}",
+            print_info.filename, duration
+        );
+        println!(
+            "[BRIDGE][PRINT][INFO] Resend ratio: {}/{} ({}%)",
+            print_info.get_resend_amount(),
+            print_info.get_line_amount(),
+            print_info.get_resend_ratio()
+        );
     }
 }

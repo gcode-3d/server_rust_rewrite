@@ -301,6 +301,12 @@ impl PrintInfo {
     pub fn get_resend_ratio(&self) -> f32 {
         return (self.resend_amount as f32 / self.gcode.len() as f32) * 100.0;
     }
+    pub fn get_resend_amount(&self) -> &usize {
+        return &self.resend_amount;
+    }
+    pub fn get_line_amount(&self) -> usize {
+        return self.gcode.len();
+    }
     pub fn get_line_by_index(&self, index: usize) -> Option<Line> {
         let content = self.get_line_content_by_index(index);
         if content.is_none() {
