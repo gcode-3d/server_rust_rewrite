@@ -17,7 +17,7 @@ use sqlx::{Connection, SqliteConnection};
 use tokio::time::sleep;
 
 use crate::{
-    api_manager::models::{BridgeEvents, EventInfo, EventType, SettingRow, StateDescription},
+    api_manager::models::{send, BridgeEvents, EventInfo, EventType, SettingRow, StateDescription},
     bridge::BridgeState,
 };
 
@@ -89,14 +89,14 @@ pub async fn handler(state: BridgeState, distributor: Sender<EventInfo>) -> Resp
             .body(Body::from("Bad Request"))
             .expect("Failed to construct valid response");
     }
-    distributor
-        .send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
-                address: result.clone().unwrap().address,
-                port: result.unwrap().port,
-            }),
-        })
-        .expect("Cannot send message");
+
+    send(
+        &distributor,
+        EventType::Bridge(BridgeEvents::ConnectionCreate {
+            address: result.clone().unwrap().address,
+            port: result.unwrap().port,
+        }),
+    );
 
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")
