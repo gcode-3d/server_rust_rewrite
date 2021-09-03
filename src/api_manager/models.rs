@@ -1,9 +1,3 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufReader, Lines},
-};
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -271,45 +265,65 @@ pub enum BridgeEvents {
 #[derive(Debug)]
 pub struct PrintInfo {
     pub filename: String,
-    pub filesize: u64,
+    pub filesize: usize,
     data_sent: u64,
-    pub file_reader: Option<Lines<BufReader<File>>>,
+    // pub file_reader: Option<Lines<BufReader<File>>>,
+    pub gcode: Vec<String>,
     pub start: DateTime<Utc>,
     pub end: Option<DateTime<Utc>>,
-    line_number: u64,
-    cache: HashMap<u64, String>,
+    line_number: usize,
+    resend_amount: usize,
 }
 
 impl PrintInfo {
     pub fn new(
         filename: String,
-        filesize: u64,
-        file_reader: Option<Lines<BufReader<File>>>,
+        filesize: usize,
+        // file_reader: Option<Lines<BufReader<File>>>,
+        gcode: Vec<String>,
         start: DateTime<Utc>,
     ) -> Self {
         Self {
             filename,
             filesize,
             data_sent: 0,
-            file_reader,
+            gcode,
+            // file_reader,
             start,
             end: None,
             line_number: 0,
-            cache: HashMap::new(),
+            resend_amount: 0,
         }
     }
-
-    pub fn get_sent_line(&self, line_number: u64) -> Option<&String> {
-        return self.cache.get(&line_number);
+    pub fn report_resend(&mut self) {
+        self.resend_amount += 1;
+    }
+    pub fn get_resend_ratio(&self) -> f32 {
+        return (self.resend_amount as f32 / self.gcode.len() as f32) * 100.0;
+    }
+    pub fn get_resend_amount(&self) -> &usize {
+        return &self.resend_amount;
+    }
+    pub fn get_line_amount(&self) -> usize {
+        return self.gcode.len();
+    }
+    pub fn get_line_by_index(&self, index: usize) -> Option<Line> {
+        let content = self.get_line_content_by_index(index);
+        if content.is_none() {
+            return None;
+        }
+        return Some(Line::new(content.unwrap().clone(), index));
+    }
+    fn get_line_content_by_index(&self, index: usize) -> Option<&String> {
+        return self.gcode.get(index);
     }
 
-    pub fn remove_sent_line(&mut self, line_number: u64) {
-        self.cache.remove(&line_number);
+    pub fn set_line_number(&mut self, line_number: usize) {
+        if line_number > self.gcode.len() + 1 {
+            panic!("Cannot set line number out of bounds");
+        }
+        self.line_number = line_number;
     }
-    pub fn insert_sent_line(&mut self, line_number: u64, line: String) {
-        self.cache.insert(line_number, line);
-    }
-
     pub fn progress(&self) -> f64 {
         if self.filesize == 0 {
             return 0.0;
@@ -323,9 +337,34 @@ impl PrintInfo {
         }
         self.data_sent = self.data_sent + bytes;
     }
-    pub fn advance(&mut self) -> u64 {
-        self.line_number += 1;
+
+    pub fn line_number(&mut self) -> usize {
         return self.line_number;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Line {
+    content: String,
+    line_number: usize,
+}
+
+impl Line {
+    pub fn new(content: String, line_number: usize) -> Self {
+        Self {
+            content,
+            line_number,
+        }
+    }
+
+    /// Get a reference to the line's line.
+    pub fn content(&self) -> &str {
+        self.content.as_str()
+    }
+
+    /// Get a reference to the line's line number.
+    pub fn line_number(&self) -> &usize {
+        &self.line_number
     }
 }
 
@@ -361,5 +400,30 @@ pub struct Message {
 impl Message {
     pub fn new(content: String, id: Uuid) -> Self {
         return Self { content, id };
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum BridgeAction {
+    Continue(Option<usize>),
+    Error,
+    Resend(usize),
+}
+
+impl std::fmt::Display for BridgeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BridgeAction::Continue(line) => {
+                if line.is_some() {
+                    write!(f, "Continue with N{}", line.unwrap_or(0))
+                } else {
+                    write!(f, "Continue")
+                }
+            }
+            BridgeAction::Error => write!(f, "Error"),
+            BridgeAction::Resend(line) => {
+                write!(f, "Resend N{}", line)
+            }
+        }
     }
 }

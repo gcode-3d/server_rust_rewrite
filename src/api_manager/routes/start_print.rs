@@ -30,7 +30,8 @@ use crate::{
     api_manager::{
         models::{BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
         responses::{
-            bad_request_response, forbidden_response, not_found_response, server_error_response,
+            self, bad_request_response, forbidden_response, not_found_response,
+            server_error_response,
         },
     },
     bridge::BridgeState,
@@ -83,24 +84,49 @@ pub async fn handler(
         .to_string_lossy()
         .into_owned();
 
-    let file = File::open(path);
+    let file = File::open(path.clone());
 
     if file.is_err() {
         return not_found_response();
     }
     let file = file.unwrap();
-    let meta = file.metadata();
-    if meta.is_err() {
-        return server_error_response();
-    }
-    let size = meta.unwrap().len();
 
     let reader = BufReader::new(file);
     let file_reader = reader.lines();
+    let mut gcode: Vec<String> = Vec::with_capacity(file_reader.count() + 1);
+
+    let file = File::open(path);
+
+    if file.is_err() {
+        return server_error_response();
+    }
+    let file = file.unwrap();
+    let file_reader = BufReader::new(file).lines();
+    let mut size: usize = 0;
+    gcode.push("M110 N0".to_string());
+    for line in file_reader {
+        if line.is_err() {
+            return responses::server_error_response();
+        }
+        let line = line.unwrap();
+
+        let line = line.split_terminator(";").next();
+        if line.is_none() {
+            continue;
+        }
+        let line = line.unwrap().trim();
+        if line.len() == 0 {
+            continue;
+        }
+        size += line.as_bytes().len();
+        gcode.push(line.to_string());
+    }
+    gcode.shrink_to_fit();
+
     distributor
         .send(EventInfo {
             event_type: EventType::Bridge(BridgeEvents::PrintStart {
-                info: PrintInfo::new(filename.to_string(), size, Some(file_reader), Utc::now()),
+                info: PrintInfo::new(filename.to_string(), size, gcode, Utc::now()),
             }),
         })
         .expect("Couldn't send message");
