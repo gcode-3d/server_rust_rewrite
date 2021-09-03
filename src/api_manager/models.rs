@@ -1,10 +1,18 @@
 use chrono::{DateTime, Utc};
+use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 use uuid::Uuid;
 
 use crate::{bridge::BridgeState, parser::TempInfo};
+
+pub fn send(sender: &Sender<EventInfo>, data: EventType) {
+    sender
+        .send(EventInfo { event_type: data })
+        .expect("Cannot send message")
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AuthDetails {
     username: String,
