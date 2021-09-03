@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     api_manager::{
-        models::{BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
+        models::{send, BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
         responses::{
             self, bad_request_response, forbidden_response, not_found_response,
             server_error_response,
@@ -123,13 +123,12 @@ pub async fn handler(
     }
     gcode.shrink_to_fit();
 
-    distributor
-        .send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::PrintStart {
-                info: PrintInfo::new(filename.to_string(), size, gcode, Utc::now()),
-            }),
-        })
-        .expect("Couldn't send message");
+    send(
+        &distributor,
+        EventType::Bridge(BridgeEvents::PrintStart {
+            info: PrintInfo::new(filename.to_string(), size, gcode, Utc::now()),
+        }),
+    );
 
     return Response::builder()
         .header(header::CONTENT_TYPE, "application/json")

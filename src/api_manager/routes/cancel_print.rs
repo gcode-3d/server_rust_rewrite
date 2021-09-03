@@ -12,8 +12,8 @@ use hyper::{header, Body, Response};
 
 use crate::{
     api_manager::{
-        models::{BridgeEvents, EventInfo, EventType, StateWrapper},
-        responses::{forbidden_response, server_error_response},
+        models::{send, BridgeEvents, EventInfo, EventType, StateWrapper},
+        responses::forbidden_response,
     },
     bridge::BridgeState,
 };
@@ -27,16 +27,7 @@ pub fn handler(state_info: StateWrapper, distributor: Sender<EventInfo>) -> Resp
         return forbidden_response();
     }
 
-    let result = distributor.send(EventInfo {
-        event_type: EventType::Bridge(BridgeEvents::PrintEnd),
-    });
-    if result.is_err() {
-        let error = result.unwrap_err();
-        let msg = format!("{}", error);
-        eprintln!("[API][ERROR][CANCELPRINT] {}", error);
-        sentry::capture_message(&msg, sentry::Level::Error);
-        return server_error_response();
-    }
+    send(&distributor, EventType::Bridge(BridgeEvents::PrintEnd));
 
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")

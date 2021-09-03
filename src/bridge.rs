@@ -123,10 +123,8 @@ impl Bridge {
 
         port.set_timeout(Duration::from_millis(10))
             .expect("Cannot set timeout on port");
-        let incoming = port;
-        let mut outgoing = incoming.try_clone().expect("Cannot clone serialport");
         Bridge::spawn_event_listener(
-            incoming.try_clone().expect("Cannot clone serialport"),
+            port.try_clone().expect("Cannot clone serialport"),
             self.receiver.clone(),
             self.distributor.clone(),
             self.print_info.clone(),
@@ -143,15 +141,16 @@ impl Bridge {
             is_canceled.clone(),
             self.message_queue.clone(),
             self.ready.clone(),
-            incoming,
+            port,
         );
 
-        let result = outgoing.write(b"M115\n");
-        if result.is_ok() {
-            outgoing.flush().expect("FLUSH FAIL");
-        } else {
-            eprintln!("[BRIDGE] Write errored: {}", result.unwrap_err())
-        }
+        send(
+            &self.distributor,
+            EventType::Bridge(BridgeEvents::TerminalSend {
+                message: "M115".to_string(),
+                id: Uuid::new_v4(),
+            }),
+        );
     }
 
     async fn handle_ok_response(
@@ -348,6 +347,12 @@ impl Bridge {
                         let data = String::from_utf8_lossy(&serial_buf[..t]);
                         let string = data.into_owned();
                         if string == "\n" {
+                            send(
+                                &distributor,
+                                EventType::Websocket(WebsocketEvents::TerminalRead {
+                                    message: collected.clone(),
+                                }),
+                            );
                             if state.lock().await.state.eq(&BridgeState::CONNECTING) {
                                 if collected.to_lowercase().starts_with("error") {
                                     send(
@@ -397,7 +402,13 @@ impl Bridge {
                                         .starts_with("FIRMWARE_NAME:Marlin")
                                     {
                                         *collected_responses.lock().await = vec![];
-                                        incoming.write(b"M115\n").expect("Cannot resend M115.");
+                                        send(
+                                            &distributor,
+                                            EventType::Bridge(BridgeEvents::TerminalSend {
+                                                message: "M115".to_string(),
+                                                id: Uuid::new_v4(),
+                                            }),
+                                        );
                                     } else {
                                         for cap in &*collected_responses.lock().await {
                                             // println!("[BRIDGE][CAP] => {}", cap);

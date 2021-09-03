@@ -12,7 +12,7 @@ use hyper::{header, Body, Response};
 use serde_json::json;
 
 use crate::{
-    api_manager::models::{BridgeEvents, EventInfo, EventType, StateDescription},
+    api_manager::models::{send, BridgeEvents, EventInfo, EventType, StateDescription},
     bridge::BridgeState,
 };
 pub const METHODS: &str = "PUT, DELETE, POST";
@@ -31,14 +31,13 @@ pub async fn handler(state: BridgeState, distributor: Sender<EventInfo>) -> Resp
             .expect("Failed to construct valid response");
     }
 
-    distributor
-        .send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::StateUpdate {
-                state: BridgeState::DISCONNECTED,
-                description: StateDescription::None,
-            }),
-        })
-        .expect("Cannot send message");
+    send(
+        &distributor,
+        EventType::Bridge(BridgeEvents::StateUpdate {
+            state: BridgeState::DISCONNECTED,
+            description: StateDescription::None,
+        }),
+    );
 
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")

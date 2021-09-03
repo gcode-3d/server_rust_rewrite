@@ -1,17 +1,29 @@
-use std::{collections::HashMap, sync::{Arc}, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use crate::{api_manager::{ models::{EventInfo, EventType, StateWrapper, WebsocketEvents}}, bridge::BridgeState};
-use api_manager::{ApiManager, models::{BridgeEvents, SettingRow, StateDescription}};
+use crate::{
+    api_manager::models::{send, EventInfo, EventType, StateWrapper, WebsocketEvents},
+    bridge::BridgeState,
+};
+use api_manager::{
+    models::{BridgeEvents, SettingRow, StateDescription},
+    ApiManager,
+};
 
 use bridge::Bridge;
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Sender};
 use futures::SinkExt;
 use hyper::upgrade::Upgraded;
-use hyper_tungstenite::{WebSocketStream, tungstenite::Message};
+use hyper_tungstenite::{tungstenite::Message, WebSocketStream};
 use serde_json::json;
 use sqlx::{Connection, Executor, SqliteConnection};
-use tokio::{fs::OpenOptions, spawn, task::{yield_now, JoinHandle}, time::{Instant, sleep}, sync::Mutex};
+use tokio::{
+    fs::OpenOptions,
+    spawn,
+    sync::Mutex,
+    task::{yield_now, JoinHandle},
+    time::{sleep, Instant},
+};
 use uuid::Uuid;
 mod api_manager;
 mod bridge;
@@ -37,7 +49,7 @@ async fn main() {
 
 struct Manager {
     bridge_thread: Option<JoinHandle<()>>,
-    state: Arc<Mutex<StateWrapper>>
+    state: Arc<Mutex<StateWrapper>>,
 }
 
 impl Manager {
@@ -47,7 +59,7 @@ impl Manager {
             state: Arc::new(Mutex::new(StateWrapper {
                 state: BridgeState::DISCONNECTED,
                 description: StateDescription::None,
-            }))
+            })),
         }
     }
 
@@ -56,21 +68,23 @@ impl Manager {
 
         let dist_sender_clone = dist_sender.clone();
         let (bridge_sender, bridge_receiver) = unbounded();
-        
+
         let sockets: Arc<tokio::sync::Mutex<HashMap<u128, WebSocketStream<Upgraded>>>> =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let sockets_clone = sockets.clone();
         let state = self.state.clone();
         spawn(async move {
-            let _ = spawn(ApiManager::start(dist_sender_clone,  sockets_clone, state));
+            let _ = spawn(ApiManager::start(dist_sender_clone, sockets_clone, state));
         });
-        self.connect_boot(dist_sender.clone(),self.state.clone()).await;
+        self.connect_boot(dist_sender.clone(), self.state.clone())
+            .await;
         let sockets_clone = sockets.clone();
-        spawn (async move {
-            loop{
-                api_manager::websocket_handler::check_incoming_messages(sockets_clone.clone()).await;
+        spawn(async move {
+            loop {
+                api_manager::websocket_handler::check_incoming_messages(sockets_clone.clone())
+                    .await;
                 sleep(Duration::from_secs(1)).await;
-            };
+            }
         });
         loop {
             if let Ok(event) = dist_receiver.try_recv() {
@@ -84,12 +98,9 @@ impl Manager {
                             &address, &port
                         );
                         if self.bridge_thread.is_some() {
-                            dist_sender.send(EventInfo { 
-                                event_type: EventType::Bridge(BridgeEvents::ConnectionCreateError {
-                                    error: "Tried to create a new connection while already connected. Aborted all connections".to_string(),
-                            }) 
-                        })
-                        .expect("Cannot send message");
+                            send(&dist_sender, EventType::Bridge(BridgeEvents::ConnectionCreateError {
+                            error: "Tried to create a new connection while already connected. Aborted all connections".to_string(),
+                    }));
 
                             continue;
                         }
@@ -104,13 +115,12 @@ impl Manager {
                                 println!("[BRIDGE][PANIC] {}", e);
                                 let msg = format!("{}", e);
                                 sentry::capture_message(&msg, sentry::Level::Error);
-                                panic_sender_clone.send(EventInfo { event_type: EventType::Bridge(BridgeEvents::StateUpdate {
+                                send(&panic_sender_clone, EventType::Bridge(BridgeEvents::StateUpdate {
                                     state: BridgeState::ERRORED,
                                     description: StateDescription::Error {
                                         message: "An internal error occurred\nCheck the logs for more info.".to_string()
                                     },
-                                }) 
-                            }).expect("Cannot send message");
+                                }));
                             }));
                             let mut bridge = Bridge::new(
                                 dist_sender_clone,
@@ -118,7 +128,7 @@ impl Manager {
                                 bridge_receiver_clone,
                                 address,
                                 port,
-                                state
+                                state,
                             );
                             bridge.start().await;
                         }));
@@ -127,21 +137,16 @@ impl Manager {
                         api_manager::models::BridgeEvents::ConnectionCreateError { error },
                     ) => {
                         eprintln!("[BRIDGE] Creating connection caused an error: {} ", error);
-                        dist_sender
-                        .send(EventInfo {
-                            event_type: EventType::KILL,
-                        })
-                        .expect("Cannot send message");
-                        dist_sender
-                            .send(EventInfo {
-                                event_type: EventType::Websocket(WebsocketEvents::StateUpdate {
-                                    state: bridge::BridgeState::ERRORED,
-                                    description: api_manager::models::StateDescription::Error {
-                                        message: error,
-                                    },
-                                }),
-                            })
-                            .expect("Cannot send message");
+                        send(&dist_sender, EventType::KILL);
+                        send(
+                            &dist_sender,
+                            EventType::Websocket(WebsocketEvents::StateUpdate {
+                                state: bridge::BridgeState::ERRORED,
+                                description: api_manager::models::StateDescription::Error {
+                                    message: error,
+                                },
+                            }),
+                        );
 
                         if let Some(handle) = &self.bridge_thread {
                             handle.abort();
@@ -151,46 +156,37 @@ impl Manager {
                             // continue
                         }
                     }
-                    
+
                     EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend {
                         message,
-                        id
+                        id,
                     }) => {
                         if self.bridge_thread.is_none() {
                             continue;
                         }
-                        bridge_sender
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(
-                                    api_manager::models::BridgeEvents::TerminalSend {
-                                        message: message.clone(),
-                                        id: id.clone()
-                                    },
-                                ),
-                            })
-                            .expect("Cannot send message");
-                        
+                        send(
+                            &bridge_sender,
+                            EventType::Bridge(api_manager::models::BridgeEvents::TerminalSend {
+                                message: message.clone(),
+                                id: id.clone(),
+                            }),
+                        );
                     }
-                    EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd) => {
-                        bridge_sender
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(
-                                    api_manager::models::BridgeEvents::PrintEnd,
-                                ),
-                            })
-                            .expect("Cannot send message");
-                    }
+                    EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd) => send(
+                        &bridge_sender,
+                        EventType::Bridge(api_manager::models::BridgeEvents::PrintEnd),
+                    ),
+
                     EventType::Bridge(api_manager::models::BridgeEvents::PrintStart { info }) => {
                         if self.bridge_thread.is_none() {
                             continue;
                         }
-                        bridge_sender
-                            .send(EventInfo {
-                                event_type: EventType::Bridge(
-                                    api_manager::models::BridgeEvents::PrintStart { info },
-                                ),
-                            })
-                            .expect("Cannot send message");
+                        send(
+                            &bridge_sender,
+                            EventType::Bridge(api_manager::models::BridgeEvents::PrintStart {
+                                info,
+                            }),
+                        );
                     }
                     EventType::Bridge(api_manager::models::BridgeEvents::StateUpdate {
                         state,
@@ -198,42 +194,36 @@ impl Manager {
                     }) => {
                         *self.state.lock().await = StateWrapper {
                             state,
-                            description: description.clone()
+                            description: description.clone(),
                         };
                         if self.bridge_thread.is_none() {
                             continue;
                         }
 
                         if state == BridgeState::DISCONNECTED || state == BridgeState::ERRORED {
-                            let _ = bridge_sender.send(EventInfo {
-                                event_type: EventType::KILL,
-                            });
+                            send(&bridge_sender, EventType::KILL);
                             self.bridge_thread.take();
                         } else {
-                            bridge_sender
-                                .send(EventInfo {
-                                    event_type: EventType::Bridge(
-                                        api_manager::models::BridgeEvents::StateUpdate {
-                                            state: state.clone(),
-                                            description: description.clone(),
-                                        },
-                                    ),
-                                })
-                                .expect("Cannot send message");
+                            send(
+                                &bridge_sender,
+                                EventType::Bridge(api_manager::models::BridgeEvents::StateUpdate {
+                                    state: state.clone(),
+                                    description: description.clone(),
+                                }),
+                            );
                         }
 
-                        dist_sender
-                            .send(EventInfo {
-                                event_type: EventType::Websocket(
-                                    api_manager::models::WebsocketEvents::StateUpdate {
-                                        state,
-                                        description,
-                                    },
-                                ),
-                            })
-                            .expect("Cannot send message");
+                        send(
+                            &bridge_sender,
+                            EventType::Websocket(
+                                api_manager::models::WebsocketEvents::StateUpdate {
+                                    state,
+                                    description,
+                                },
+                            ),
+                        );
                     }
-                    
+
                     EventType::Websocket(WebsocketEvents::TempUpdate {
                         tools,
                         bed,
@@ -250,12 +240,14 @@ impl Manager {
                         });
                         let mut delete_queue: Vec<u128> = vec![];
                         for sender in sockets.lock().await.iter_mut() {
-                            let result = sender
-                                .1
-                                .send(Message::text(json.to_string())).await;
+                            let result = sender.1.send(Message::text(json.to_string())).await;
 
                             if result.is_err() {
-                                println!("[WS][ERROR] ID: {} | {}", Uuid::from_u128(sender.0.clone()).to_hyphenated(), result.unwrap_err());
+                                println!(
+                                    "[WS][ERROR] ID: {} | {}",
+                                    Uuid::from_u128(sender.0.clone()).to_hyphenated(),
+                                    result.unwrap_err()
+                                );
                                 delete_queue.push(sender.0.clone());
                             }
                         }
@@ -264,9 +256,7 @@ impl Manager {
                             guard.remove(&id);
                         }
                     }
-                    EventType::Websocket(WebsocketEvents::TerminalRead {
-                        message,
-                    }) => {
+                    EventType::Websocket(WebsocketEvents::TerminalRead { message }) => {
                         let time: DateTime<Utc> = Utc::now();
                         let json = json!({
                                 "type": "terminal_message",
@@ -290,10 +280,7 @@ impl Manager {
                             }
                         }
                     }
-                    EventType::Websocket(WebsocketEvents::TerminalSend {
-                        message,
-                        id,
-                    }) => {
+                    EventType::Websocket(WebsocketEvents::TerminalSend { message, id }) => {
                         let time: DateTime<Utc> = Utc::now();
                         let json = json!({
                                 "type": "terminal_message",
@@ -309,15 +296,13 @@ impl Manager {
                         for sender in sockets.lock().await.iter_mut() {
                             sender
                                 .1
-                                .send(Message::text(json.to_string())).await
+                                .send(Message::text(json.to_string()))
+                                .await
                                 .expect("Cannot send message");
                         }
                     }
 
-                    EventType::Websocket(WebsocketEvents::StateUpdate {
-                        state,
-                        description,
-                    }) => {
+                    EventType::Websocket(WebsocketEvents::StateUpdate { state, description }) => {
                         let json = match state {
                             BridgeState::DISCONNECTED => json!({
                                     "type": "state_update",
@@ -376,21 +361,22 @@ impl Manager {
                                         end_string = Some(end.unwrap().to_rfc3339());
                                     }
                                     json!({
-											"type": "state_update",
-											"content": {
-												"state": "Printing",
-												"description": {
-													"printInfo": {
-														"file": {
-															"name": filename,
-														},
-														"progress": format!("{:.2}", progress),
-														"startTime": start.to_rfc3339(),
-												    	"estEndTime": end_string
-													}
-												}
-											}
-									}).to_string()
+                                            "type": "state_update",
+                                            "content": {
+                                                "state": "Printing",
+                                                "description": {
+                                                    "printInfo": {
+                                                        "file": {
+                                                            "name": filename,
+                                                        },
+                                                        "progress": format!("{:.2}", progress),
+                                                        "startTime": start.to_rfc3339(),
+                                                        "estEndTime": end_string
+                                                    }
+                                                }
+                                            }
+                                    })
+                                    .to_string()
                                 }
                                 _ => json!({
                                         "type": "state_update",
@@ -406,7 +392,8 @@ impl Manager {
                         for sender in sockets.lock().await.iter_mut() {
                             sender
                                 .1
-                                .send(Message::text(json.to_string())).await
+                                .send(Message::text(json.to_string()))
+                                .await
                                 .expect("Cannot send message");
                         }
                     }
@@ -417,9 +404,15 @@ impl Manager {
                 yield_now().await;
                 let state = self.state.lock().await.state;
                 if state.ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 300 {
-                    sleep(tokio::time::Duration::from_millis(300 - time.elapsed().as_millis() as u64)).await;
-                }else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 3 {
-                    sleep(tokio::time::Duration::from_millis(3 - time.elapsed().as_millis() as u64)).await;
+                    sleep(tokio::time::Duration::from_millis(
+                        300 - time.elapsed().as_millis() as u64,
+                    ))
+                    .await;
+                } else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 3 {
+                    sleep(tokio::time::Duration::from_millis(
+                        3 - time.elapsed().as_millis() as u64,
+                    ))
+                    .await;
                 }
             }
         }
@@ -436,45 +429,43 @@ impl Manager {
             if state.lock().await.state != BridgeState::DISCONNECTED {
                 return;
             }
-                
 
-        let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
-        let query = sqlx::query_as::<_, SettingRow>(
+            let mut connection = (SqliteConnection::connect("storage.db")).await.unwrap();
+            let query = sqlx::query_as::<_, SettingRow>(
                 "SELECT * FROM settings where id = 'B_startOnBoot' or id = 'S_devicePath' or id = 'N_deviceBaud'",
             );
 
-        let result = query.fetch_all(&mut connection).await;
-        if result.is_ok() {
-            let rows = result.unwrap();
-            if rows.len() == 3 {
-                let mut address: Option<String> = None;
-                let mut baud_rate = 0;
-                let mut connect = false;
+            let result = query.fetch_all(&mut connection).await;
+            if result.is_ok() {
+                let rows = result.unwrap();
+                if rows.len() == 3 {
+                    let mut address: Option<String> = None;
+                    let mut baud_rate = 0;
+                    let mut connect = false;
 
-                for row in rows {
-                    if row.id == "B_startOnBoot" {
-                        connect = row.bool.unwrap();
-                    } else if row.id == "S_devicePath" {
-                        address = Some(row.raw_value);
-                    } else if row.id == "N_deviceBaud" {
-                        baud_rate = row.number.unwrap() as u32;
+                    for row in rows {
+                        if row.id == "B_startOnBoot" {
+                            connect = row.bool.unwrap();
+                        } else if row.id == "S_devicePath" {
+                            address = Some(row.raw_value);
+                        } else if row.id == "N_deviceBaud" {
+                            baud_rate = row.number.unwrap() as u32;
+                        }
                     }
-                }
-                if connect && baud_rate != 0 && address.is_some() {
-                println!("[BRIDGE] Connect on boot is set, trying to connect.");
-                    sender
-                        .send(EventInfo {
-                            event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
+                    if connect && baud_rate != 0 && address.is_some() {
+                        println!("[BRIDGE] Connect on boot is set, trying to connect.");
+                        send(
+                            &sender,
+                            EventType::Bridge(BridgeEvents::ConnectionCreate {
                                 address: address.unwrap(),
                                 port: baud_rate,
                             }),
-                        })
-                        .expect("Cannot send message");
+                        );
+                    }
                 }
             }
-        }
-});
-}
+        });
+    }
 }
 
 async fn setup_db() {
