@@ -140,7 +140,7 @@ impl Manager {
                         send(&dist_sender, EventType::KILL);
                         send(
                             &dist_sender,
-                            EventType::Websocket(WebsocketEvents::StateUpdate {
+                            EventType::Bridge(BridgeEvents::StateUpdate {
                                 state: bridge::BridgeState::ERRORED,
                                 description: api_manager::models::StateDescription::Error {
                                     message: error,
@@ -192,14 +192,15 @@ impl Manager {
                         state,
                         description,
                     }) => {
+                        {
+                            let oldstate = self.state.lock().await;
+                            println!("[STATEUPDATE] {:?} => {:?}", oldstate.state, state);
+                        }
+
                         *self.state.lock().await = StateWrapper {
                             state,
                             description: description.clone(),
                         };
-                        if self.bridge_thread.is_none() {
-                            continue;
-                        }
-
                         if state == BridgeState::DISCONNECTED || state == BridgeState::ERRORED {
                             send(&bridge_sender, EventType::KILL);
                             self.bridge_thread.take();
@@ -214,7 +215,7 @@ impl Manager {
                         }
 
                         send(
-                            &bridge_sender,
+                            &dist_sender,
                             EventType::Websocket(
                                 api_manager::models::WebsocketEvents::StateUpdate {
                                     state,
@@ -423,9 +424,7 @@ impl Manager {
         Try to send a connectionCreate event to the global dist sender.
     */
     async fn connect_boot(&self, sender: Sender<EventInfo>, state: Arc<Mutex<StateWrapper>>) {
-        let timeout_amount = 5;
         spawn(async move {
-            sleep(Duration::from_secs(timeout_amount)).await;
             if state.lock().await.state != BridgeState::DISCONNECTED {
                 return;
             }
