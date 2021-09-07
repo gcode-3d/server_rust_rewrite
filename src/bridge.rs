@@ -347,13 +347,15 @@ impl Bridge {
                         let data = String::from_utf8_lossy(&serial_buf[..t]);
                         let string = data.into_owned();
                         if string == "\n" {
-                            send(
-                                &distributor,
-                                EventType::Websocket(WebsocketEvents::TerminalRead {
-                                    message: collected.clone(),
-                                }),
-                            );
                             if state.lock().await.state.eq(&BridgeState::CONNECTING) {
+                                if !TOOLTEMPREGEX.is_match(&collected) {
+                                    send(
+                                        &distributor,
+                                        EventType::Websocket(WebsocketEvents::TerminalRead {
+                                            message: collected.clone(),
+                                        }),
+                                    );
+                                }
                                 if collected.to_lowercase().starts_with("error") {
                                     send(
                                         &distributor,

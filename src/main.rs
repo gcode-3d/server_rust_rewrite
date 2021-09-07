@@ -30,7 +30,7 @@ mod bridge;
 mod client_update_check;
 mod parser;
 
-#[tokio::main(worker_threads = 1)]
+#[tokio::main(worker_threads = 2)]
 async fn main() {
     let _guard = sentry::init((
         "https://2a3db3e9cab34ab2996414dd5bf6e169@o229745.ingest.sentry.io/5843753",
@@ -423,7 +423,7 @@ impl Manager {
         Try to send a connectionCreate event to the global dist sender.
     */
     async fn connect_boot(&self, sender: Sender<EventInfo>, state: Arc<Mutex<StateWrapper>>) {
-        let timeout_amount = 3;
+        let timeout_amount = 5;
         spawn(async move {
             sleep(Duration::from_secs(timeout_amount)).await;
             if state.lock().await.state != BridgeState::DISCONNECTED {

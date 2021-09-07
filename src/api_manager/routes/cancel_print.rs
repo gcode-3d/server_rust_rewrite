@@ -20,7 +20,7 @@ use crate::{
 
 #[allow(dead_code)]
 pub const METHODS: &str = "DELETE";
-pub const PATH: &str = "/api/print/";
+pub const PATH: &str = "/api/print";
 
 pub fn handler(state_info: StateWrapper, distributor: Sender<EventInfo>) -> Response<Body> {
     if state_info.state != BridgeState::PRINTING {
