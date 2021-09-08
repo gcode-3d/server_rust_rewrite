@@ -11,19 +11,16 @@ use crossbeam_channel::Sender;
 use hyper::{header, Body, Request, Response};
 use sqlx::{Connection, SqliteConnection};
 
-use crate::{
-    api_manager::{
-        models::{BridgeEvents, EventInfo, EventType, SettingRow, StateWrapper},
-        responses::forbidden_response,
-    },
-    bridge::BridgeState,
+use crate::api_manager::{
+    models::{BridgeState, EventType, SettingRow, StateWrapper},
+    responses::forbidden_response,
 };
 pub const METHODS: &str = "PUT, DELETE, POST";
 pub const PATH: &str = "/api/connection";
 
 pub async fn handler(
     _request: Request<Body>,
-    distributor: Sender<EventInfo>,
+    distributor: Sender<EventType>,
     state_info: StateWrapper,
 ) -> Response<Body> {
     if !(state_info.state == BridgeState::DISCONNECTED || state_info.state == BridgeState::ERRORED)
@@ -76,11 +73,9 @@ pub async fn handler(
     }
 
     distributor
-        .send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::ConnectionCreate {
-                address: result.clone().unwrap().address,
-                port: result.unwrap().port,
-            }),
+        .send(EventType::CreateBridge {
+            address: result.clone().unwrap().address,
+            port: result.unwrap().port,
         })
         .expect("Cannot send message");
 

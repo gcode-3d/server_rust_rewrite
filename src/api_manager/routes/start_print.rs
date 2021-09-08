@@ -26,15 +26,11 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::{
-    api_manager::{
-        models::{send, BridgeEvents, EventInfo, EventType, PrintInfo, StateWrapper},
-        responses::{
-            self, bad_request_response, forbidden_response, not_found_response,
-            server_error_response,
-        },
+use crate::api_manager::{
+    models::{send, BridgeState, EventType, PrintInfo, StateWrapper},
+    responses::{
+        self, bad_request_response, forbidden_response, not_found_response, server_error_response,
     },
-    bridge::BridgeState,
 };
 
 pub const PATH: &str = "/api/print";
@@ -42,7 +38,7 @@ pub const METHODS: &str = "PUT";
 
 pub async fn handler(
     mut req: Request<Body>,
-    distributor: Sender<EventInfo>,
+    distributor: Sender<EventType>,
     state: Arc<Mutex<StateWrapper>>,
 ) -> Response<Body> {
     let result = body::to_bytes(req.body_mut()).await.unwrap();
@@ -125,9 +121,12 @@ pub async fn handler(
 
     send(
         &distributor,
-        EventType::Bridge(BridgeEvents::PrintStart {
-            info: PrintInfo::new(filename.to_string(), size, gcode, Utc::now()),
-        }),
+        EventType::PrintStart(PrintInfo::new(
+            filename.to_string(),
+            size,
+            gcode,
+            Utc::now(),
+        )),
     );
 
     return Response::builder()

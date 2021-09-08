@@ -11,14 +11,11 @@ use crossbeam_channel::Sender;
 use hyper::{header, Body, Response};
 use serde_json::json;
 
-use crate::{
-    api_manager::models::{send, BridgeEvents, EventInfo, EventType, StateDescription},
-    bridge::BridgeState,
-};
+use crate::api_manager::models::{send, BridgeState, EventType, StateDescription, StateWrapper};
 pub const METHODS: &str = "PUT, DELETE, POST";
 pub const PATH: &str = "/api/connection";
 
-pub async fn handler(state: BridgeState, distributor: Sender<EventInfo>) -> Response<Body> {
+pub async fn handler(state: BridgeState, distributor: Sender<EventType>) -> Response<Body> {
     if state.eq(&BridgeState::DISCONNECTED) || state.eq(&BridgeState::ERRORED) {
         return Response::builder()
             .header(header::CONTENT_TYPE, "text/plain")
@@ -33,7 +30,7 @@ pub async fn handler(state: BridgeState, distributor: Sender<EventInfo>) -> Resp
 
     send(
         &distributor,
-        EventType::Bridge(BridgeEvents::StateUpdate {
+        EventType::StateUpdate(StateWrapper {
             state: BridgeState::DISCONNECTED,
             description: StateDescription::None,
         }),

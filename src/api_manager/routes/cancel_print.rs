@@ -10,24 +10,21 @@
 use crossbeam_channel::Sender;
 use hyper::{header, Body, Response};
 
-use crate::{
-    api_manager::{
-        models::{send, BridgeEvents, EventInfo, EventType, StateWrapper},
-        responses::forbidden_response,
-    },
-    bridge::BridgeState,
+use crate::api_manager::{
+    models::{send, BridgeState, EventType, StateWrapper},
+    responses::forbidden_response,
 };
 
 #[allow(dead_code)]
 pub const METHODS: &str = "DELETE";
 pub const PATH: &str = "/api/print";
 
-pub fn handler(state_info: StateWrapper, distributor: Sender<EventInfo>) -> Response<Body> {
+pub fn handler(state_info: StateWrapper, distributor: Sender<EventType>) -> Response<Body> {
     if state_info.state != BridgeState::PRINTING {
         return forbidden_response();
     }
 
-    send(&distributor, EventType::Bridge(BridgeEvents::PrintEnd));
+    send(&distributor, EventType::PrintEnd);
 
     return Response::builder()
         .header(header::CONTENT_TYPE, "text/plain")

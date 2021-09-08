@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::ser::SerializeStruct;
 
-use crate::api_manager::models::{BridgeAction, WebsocketEvents};
+use crate::api_manager::models::{BridgeAction, EventType};
 
 lazy_static! {
     static ref TOOLTEMPREGEX: Regex = Regex::new(r"((T\d?):([\d\.]+) ?/([\d\.]+))+").unwrap();
@@ -50,7 +50,7 @@ impl Parser {
         return format!("{}*{}", line, cs);
     }
 
-    pub fn parse_temperature(input: &String) -> WebsocketEvents {
+    pub fn parse_temperature(input: &String) -> EventType {
         let mut tools: Vec<TempInfo> = Vec::new();
 
         let mut bed: Option<TempInfo> = None;
@@ -82,7 +82,7 @@ impl Parser {
             let info = TempInfo::new_no_name(current_temp, target_temp);
             chamber = Some(info);
         }
-        return WebsocketEvents::TempUpdate {
+        return EventType::TempUpdate {
             tools,
             bed,
             chamber,

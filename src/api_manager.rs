@@ -8,7 +8,7 @@ use crate::api_manager::responses::{
 };
 
 use self::{
-    models::{AuthPermissions, EventInfo, StateWrapper},
+    models::{AuthPermissions, EventType, StateWrapper},
     responses::bad_request_response,
 };
 
@@ -45,7 +45,7 @@ pub struct ApiManager {}
 */
 impl ApiManager {
     pub async fn start(
-        distributor: Sender<EventInfo>,
+        distributor: Sender<EventType>,
         sockets: Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
         state: Arc<Mutex<StateWrapper>>,
     ) -> () {
@@ -90,7 +90,7 @@ impl ApiManager {
 async fn router(
     mut req: Request<Body>,
     file_server: Static,
-    distributor: Sender<EventInfo>,
+    distributor: Sender<EventType>,
     state: Arc<Mutex<StateWrapper>>,
     sockets: Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
 ) -> Result<Response<Body>, Infallible> {
@@ -215,7 +215,7 @@ async fn router(
 */
 async fn handle_route(
     mut request: Request<Body>,
-    distributor: Sender<EventInfo>,
+    distributor: Sender<EventType>,
     state: Arc<Mutex<StateWrapper>>,
 ) -> Response<Body> {
     let path = normalize_url(&request);

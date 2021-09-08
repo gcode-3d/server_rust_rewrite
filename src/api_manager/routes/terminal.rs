@@ -11,12 +11,9 @@
     State: Connected
 */
 
-use crate::{
-    api_manager::{
-        models::{BridgeEvents, EventInfo, EventType},
-        responses::{bad_request_response, forbidden_response},
-    },
-    bridge::BridgeState,
+use crate::api_manager::{
+    models::{BridgeState, EventType, Message},
+    responses::{bad_request_response, forbidden_response},
 };
 use crossbeam_channel::Sender;
 use hyper::{body, header, Body, Request, Response};
@@ -28,7 +25,7 @@ pub const PATH: &str = "/api/terminal";
 
 pub async fn handler(
     mut request: Request<Body>,
-    sender: Sender<EventInfo>,
+    sender: Sender<EventType>,
     state: BridgeState,
 ) -> Response<Body> {
     if state != BridgeState::CONNECTED {
@@ -62,12 +59,10 @@ pub async fn handler(
     let message = message.unwrap();
     let id = Uuid::new_v4();
     sender
-        .send(EventInfo {
-            event_type: EventType::Bridge(BridgeEvents::TerminalSend {
-                message: message.to_string(),
-                id: id.clone(),
-            }),
-        })
+        .send(EventType::OutGoingTerminalMessage(Message::new(
+            message.to_string(),
+            id.clone(),
+        )))
         .expect("Cannot send message");
 
     return Response::builder()

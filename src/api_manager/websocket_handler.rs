@@ -10,10 +10,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::Mutex, task::yield_now};
 use uuid::Uuid;
 
-use crate::{
-    api_manager::models::{self},
-    bridge::BridgeState,
-};
+use crate::api_manager::models::{self, BridgeState};
 
 use super::models::{AuthPermissions, StateWrapper};
 /*
