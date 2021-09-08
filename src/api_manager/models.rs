@@ -5,12 +5,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 use uuid::Uuid;
 
-use crate::{bridge::BridgeState, parser::TempInfo};
+use crate::parser::TempInfo;
 
-pub fn send(sender: &Sender<EventInfo>, data: EventType) {
-    sender
-        .send(EventInfo { event_type: data })
-        .expect("Cannot send message")
+pub fn send(sender: &Sender<EventType>, data: EventType) {
+    sender.send(data).expect("Cannot send message")
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -221,53 +219,38 @@ pub struct EventInfo {
     pub event_type: EventType,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum BridgeState {
+    DISCONNECTED = 0,
+    CONNECTED = 1,
+    CONNECTING = 2,
+    ERRORED = -1,
+    PREPARING = 5,
+    PRINTING = 6,
+    FINISHING = 7,
+}
+
 #[derive(Debug)]
 pub enum EventType {
-    KILL,
-    Bridge(BridgeEvents),
-    Websocket(WebsocketEvents),
-}
-#[derive(Clone, Debug)]
-pub enum WebsocketEvents {
-    TerminalRead {
-        message: String,
+    StateUpdate(StateWrapper),
+    CreateBridge {
+        address: String,
+        port: u32,
     },
-    TerminalSend {
-        message: String,
-        id: Uuid,
+    CreateBridgeError {
+        error: String,
     },
+    KillBridge,
+    PrintEnd,
+    PrintStart(PrintInfo),
     TempUpdate {
         tools: Vec<TempInfo>,
         bed: Option<TempInfo>,
         chamber: Option<TempInfo>,
     },
-    StateUpdate {
-        state: BridgeState,
-        description: StateDescription,
-    },
-}
-
-#[derive(Debug)]
-pub enum BridgeEvents {
-    ConnectionCreate {
-        address: String,
-        port: u32,
-    },
-    ConnectionCreateError {
-        error: String,
-    },
-    TerminalSend {
-        message: String,
-        id: Uuid,
-    },
-    StateUpdate {
-        state: BridgeState,
-        description: StateDescription,
-    },
-    PrintStart {
-        info: PrintInfo,
-    },
-    PrintEnd,
+    IncomingTerminalMessage(String),
+    OutGoingTerminalMessage(Message),
 }
 
 #[derive(Debug)]

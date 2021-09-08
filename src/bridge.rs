@@ -11,35 +11,21 @@ use crate::{
     api_manager::{
         self,
         models::{
-            send, BridgeAction, BridgeEvents, EventInfo,
-            EventType::{self},
-            Message, PrintInfo, StateDescription, StateWrapper, WebsocketEvents,
+            send, BridgeAction, BridgeState, EventType, Message, PrintInfo, StateDescription,
+            StateWrapper,
         },
     },
-    bridge,
     parser::Parser,
 };
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeState {
-    DISCONNECTED = 0,
-    CONNECTED = 1,
-    CONNECTING = 2,
-    ERRORED = -1,
-    PREPARING = 5,
-    PRINTING = 6,
-    FINISHING = 7,
-}
 
 pub struct Bridge {
     address: String,
     baudrate: u32,
     state: Arc<Mutex<StateWrapper>>,
     print_info: Arc<Mutex<Option<PrintInfo>>>,
-    distributor: Sender<EventInfo>,
-    sender: Sender<EventInfo>,
-    receiver: Receiver<EventInfo>,
+    distributor: Sender<EventType>,
+    sender: Sender<EventType>,
+    receiver: Receiver<EventType>,
     message_queue: Arc<Mutex<VecDeque<Message>>>,
     ready: Arc<Mutex<bool>>,
 }
@@ -49,9 +35,9 @@ lazy_static! {
 }
 impl Bridge {
     pub fn new(
-        distibutor: Sender<EventInfo>,
-        sender: Sender<EventInfo>,
-        receiver: Receiver<EventInfo>,
+        distibutor: Sender<EventType>,
+        sender: Sender<EventType>,
+        receiver: Receiver<EventType>,
         address: String,
         baudrate: u32,
         state: Arc<Mutex<StateWrapper>>,
@@ -73,13 +59,9 @@ impl Bridge {
     // if port fails, emit failure message to distributor.
     pub async fn start(&mut self) {
         let is_canceled = Arc::new(Mutex::new(false));
-        *self.state.lock().await = StateWrapper {
-            state: BridgeState::CONNECTING,
-            description: StateDescription::None,
-        };
         send(
             &self.distributor,
-            EventType::Websocket(WebsocketEvents::StateUpdate {
+            EventType::StateUpdate(StateWrapper {
                 state: BridgeState::CONNECTING,
                 description: api_manager::models::StateDescription::None,
             }),
@@ -93,25 +75,22 @@ impl Bridge {
             match err.kind {
                 serialport::ErrorKind::NoDevice => send(
                     &self.distributor,
-                    EventType::Bridge(bridge::BridgeEvents::ConnectionCreateError {
+                    EventType::CreateBridgeError {
                         error: err.description,
-                    }),
+                    },
                 ),
                 serialport::ErrorKind::InvalidInput => todo!("INV. INPUT"),
-                serialport::ErrorKind::Unknown => {
-                    send(
-                        &self.distributor,
-                        EventType::Bridge(bridge::BridgeEvents::ConnectionCreateError {
-                            error: err.description,
-                        }),
-                    );
-                }
-
+                serialport::ErrorKind::Unknown => send(
+                    &self.distributor,
+                    EventType::CreateBridgeError {
+                        error: err.description,
+                    },
+                ),
                 serialport::ErrorKind::Io(_) => send(
                     &self.distributor,
-                    EventType::Bridge(bridge::BridgeEvents::ConnectionCreateError {
+                    EventType::CreateBridgeError {
                         error: err.description,
-                    }),
+                    },
                 ),
             }
             return;
@@ -146,16 +125,13 @@ impl Bridge {
 
         send(
             &self.distributor,
-            EventType::Bridge(BridgeEvents::TerminalSend {
-                message: "M115".to_string(),
-                id: Uuid::new_v4(),
-            }),
+            EventType::OutGoingTerminalMessage(Message::new("M115".to_string(), Uuid::new_v4())),
         );
     }
 
     async fn handle_ok_response(
-        distributor: &Sender<EventInfo>,
-        bridge_sender: &Sender<EventInfo>,
+        distributor: &Sender<EventType>,
+        bridge_sender: &Sender<EventType>,
         collected_responses: &Mutex<Vec<String>>,
         collected: &mut String,
         state: &Mutex<StateWrapper>,
@@ -188,7 +164,7 @@ impl Bridge {
                         return;
                     }
                     if line.is_none() {
-                        send(&distributor, EventType::Bridge(BridgeEvents::PrintEnd));
+                        send(distributor, EventType::PrintEnd);
 
                         return;
                     }
@@ -204,7 +180,7 @@ impl Bridge {
                     if difference > 0.1 {
                         send(
                             &distributor,
-                            EventType::Websocket(WebsocketEvents::StateUpdate {
+                            EventType::StateUpdate(StateWrapper {
                                 state: BridgeState::PRINTING,
                                 description: crate::api_manager::models::StateDescription::Print {
                                     filename: print_info.filename.to_string(),
@@ -216,11 +192,11 @@ impl Bridge {
                         );
                     }
                     send(
-                        &bridge_sender,
-                        EventType::Bridge(BridgeEvents::TerminalSend {
-                            message: Parser::add_checksum(line.line_number(), line.content()),
-                            id: Uuid::new_v4(),
-                        }),
+                        &distributor,
+                        EventType::OutGoingTerminalMessage(Message::new(
+                            Parser::add_checksum(line.line_number(), line.content()),
+                            Uuid::new_v4(),
+                        )),
                     );
 
                     return;
@@ -230,13 +206,7 @@ impl Bridge {
                     if message.is_some() {
                         let message = message.unwrap();
 
-                        send(
-                            &bridge_sender,
-                            EventType::Bridge(BridgeEvents::TerminalSend {
-                                message: message.content,
-                                id: message.id,
-                            }),
-                        );
+                        send(&bridge_sender, EventType::OutGoingTerminalMessage(message));
                     } else {
                         *ready.lock().await = true;
                     }
@@ -245,7 +215,7 @@ impl Bridge {
 
             BridgeAction::Error => send(
                 &distributor,
-                EventType::Bridge(BridgeEvents::StateUpdate {
+                EventType::StateUpdate(StateWrapper {
                     state: BridgeState::ERRORED,
                     description: StateDescription::Error {
                         message: "Bridge encountered unknown error.\n See terminal for more info"
@@ -264,8 +234,8 @@ impl Bridge {
                     print_info.report_resend();
                     if print_info.get_resend_ratio() > 0.1 {
                         // TODO: replace this with a notification / setting to ignore this.
-                        return send(&distributor, EventType::Bridge(
-                            BridgeEvents::StateUpdate {
+                        return send(&distributor, EventType::StateUpdate(
+                            StateWrapper {
                                 state: BridgeState::ERRORED,
                                 description: StateDescription::Error {message: "Resend ratio went above 10%.\n Consider checking your connection".to_string()},
                             },
@@ -278,15 +248,15 @@ impl Bridge {
 
                         send(
                             &bridge_sender,
-                            EventType::Bridge(BridgeEvents::TerminalSend {
-                                message: Parser::add_checksum(line.line_number(), line.content()),
-                                id: Uuid::new_v4(),
-                            }),
+                            EventType::OutGoingTerminalMessage(Message::new(
+                                Parser::add_checksum(line.line_number(), line.content()),
+                                Uuid::new_v4(),
+                            )),
                         );
                     } else {
                         send(
                             &distributor,
-                            EventType::Bridge(BridgeEvents::StateUpdate {
+                            EventType::StateUpdate(StateWrapper {
                                 state: BridgeState::ERRORED,
                                 description: StateDescription::Error {
                                     message: "Cannot resend line".to_string(),
@@ -302,7 +272,7 @@ impl Bridge {
 
     fn spawn_timeout(
         timeout_amount: u64,
-        distributor: Sender<EventInfo>,
+        distributor: Sender<EventType>,
         state: Arc<Mutex<StateWrapper>>,
     ) {
         spawn(async move {
@@ -310,7 +280,7 @@ impl Bridge {
             if state.lock().await.state == BridgeState::CONNECTING {
                 send(
                     &distributor,
-                    EventType::Bridge(BridgeEvents::StateUpdate {
+                    EventType::StateUpdate(StateWrapper {
                         state: BridgeState::ERRORED,
                         description: api_manager::models::StateDescription::Error {
                             message: "Timed out".to_string(),
@@ -322,8 +292,8 @@ impl Bridge {
     }
 
     fn spawn_bridge_serial_reader(
-        distributor: Sender<EventInfo>,
-        bridge_sender: Sender<EventInfo>,
+        distributor: Sender<EventType>,
+        bridge_sender: Sender<EventType>,
         print_info: Arc<Mutex<Option<PrintInfo>>>,
         state: Arc<Mutex<StateWrapper>>,
         canceled: Arc<Mutex<bool>>,
@@ -351,15 +321,13 @@ impl Bridge {
                                 if !TOOLTEMPREGEX.is_match(&collected) {
                                     send(
                                         &distributor,
-                                        EventType::Websocket(WebsocketEvents::TerminalRead {
-                                            message: collected.clone(),
-                                        }),
+                                        EventType::IncomingTerminalMessage(collected.clone()),
                                     );
                                 }
                                 if collected.to_lowercase().starts_with("error") {
                                     send(
                                         &distributor,
-                                        EventType::Bridge(BridgeEvents::StateUpdate {
+                                        EventType::StateUpdate(StateWrapper {
                                             state: BridgeState::ERRORED,
                                             description: StateDescription::Error {
                                                 message: collected.clone(),
@@ -372,8 +340,8 @@ impl Bridge {
                                 {
                                     collected = String::new();
                                     if commands_left_to_send.len() == 0 {
-                                        send(&distributor, EventType::Bridge(
-                                            BridgeEvents::StateUpdate {
+                                        send(&distributor, EventType::StateUpdate(
+                                            StateWrapper {
                                                 state: BridgeState::CONNECTED,
                                                 description: api_manager::models::StateDescription::Capability {
                                                     capabilities: collected_responses.lock().await.clone()
@@ -387,10 +355,10 @@ impl Bridge {
                                     let command = commands_left_to_send.pop().unwrap();
                                     send(
                                         &distributor,
-                                        EventType::Bridge(BridgeEvents::TerminalSend {
-                                            message: command.clone(),
-                                            id: Uuid::new_v4(),
-                                        }),
+                                        EventType::OutGoingTerminalMessage(Message::new(
+                                            command.clone(),
+                                            Uuid::new_v4(),
+                                        )),
                                     );
 
                                     continue;
@@ -406,10 +374,10 @@ impl Bridge {
                                         *collected_responses.lock().await = vec![];
                                         send(
                                             &distributor,
-                                            EventType::Bridge(BridgeEvents::TerminalSend {
-                                                message: "M115".to_string(),
-                                                id: Uuid::new_v4(),
-                                            }),
+                                            EventType::OutGoingTerminalMessage(Message::new(
+                                                "M115".to_string(),
+                                                Uuid::new_v4(),
+                                            )),
                                         );
                                     } else {
                                         for cap in &*collected_responses.lock().await {
@@ -435,10 +403,10 @@ impl Bridge {
                                         }
                                         send(
                                             &distributor,
-                                            EventType::Bridge(BridgeEvents::TerminalSend {
-                                                message: "G90".to_string(),
-                                                id: Uuid::new_v4(),
-                                            }),
+                                            EventType::OutGoingTerminalMessage(Message::new(
+                                                "G90".to_string(),
+                                                Uuid::new_v4(),
+                                            )),
                                         );
 
                                         collected_responses.lock().await.push(collected);
@@ -451,16 +419,14 @@ impl Bridge {
                                 if TOOLTEMPREGEX.is_match(&collected) {
                                     let temp_info = Parser::parse_temperature(&collected);
 
-                                    send(&cloned_dist, EventType::Websocket(temp_info));
+                                    send(&cloned_dist, temp_info);
                                 } else {
                                     println!("[BRIDGE][RECV] {}", collected);
                                     collected_responses.lock().await.push(collected.clone());
 
                                     send(
                                         &distributor,
-                                        EventType::Websocket(WebsocketEvents::TerminalRead {
-                                            message: collected.clone(),
-                                        }),
+                                        EventType::IncomingTerminalMessage(collected.clone()),
                                     );
                                 }
 
@@ -499,10 +465,7 @@ impl Bridge {
                                         let message = message.unwrap();
                                         send(
                                             &bridge_sender,
-                                            EventType::Bridge(BridgeEvents::TerminalSend {
-                                                message: message.content.clone(),
-                                                id: message.id,
-                                            }),
+                                            EventType::OutGoingTerminalMessage(message),
                                         );
                                     }
                                 }
@@ -517,7 +480,7 @@ impl Bridge {
 
                             send(
                                 &cloned_dist,
-                                EventType::Bridge(BridgeEvents::StateUpdate {
+                                EventType::StateUpdate(StateWrapper {
                                     state: BridgeState::ERRORED,
                                     description: api_manager::models::StateDescription::Error {
                                         message: e.to_string(),
@@ -534,8 +497,8 @@ impl Bridge {
 
     fn spawn_event_listener(
         mut outgoing: Box<dyn SerialPort>,
-        receiver: Receiver<EventInfo>,
-        distributor: Sender<EventInfo>,
+        receiver: Receiver<EventType>,
+        distributor: Sender<EventType>,
         print_info: Arc<Mutex<Option<PrintInfo>>>,
         state_info: Arc<Mutex<StateWrapper>>,
         canceled: Arc<Mutex<bool>>,
@@ -550,50 +513,43 @@ impl Bridge {
             );
             loop {
                 if let Ok(event) = receiver.try_recv() {
-                    match event.event_type {
-                        EventType::KILL => {
+                    match event {
+                        EventType::KillBridge => {
                             drop(outgoing);
                             *canceled.lock().await = true;
                             break;
                         }
-                        EventType::Bridge(BridgeEvents::TerminalSend { mut message, id }) => {
-                            if !message.ends_with("\n") {
-                                message = format!("{}\n", message);
+                        EventType::OutGoingTerminalMessage(mut message) => {
+                            if !message.content.ends_with("\n") {
+                                message.content = format!("{}\n", message.content);
                             }
                             if state_info.lock().await.state.eq(&BridgeState::CONNECTED) {
                                 if *ready.lock().await == false {
                                     let mut guard = queue.lock().await;
-                                    guard.push_back(Message::new(message, id));
+                                    guard.push_back(message);
                                     continue;
                                 } else {
                                     *ready.lock().await = true;
                                 }
                             }
-                            let result = outgoing.write(message.as_bytes());
+                            let result = outgoing.write(message.content.as_bytes());
                             if result.is_err() {
                                 let err = result.unwrap_err();
                                 eprintln!("[BRIDGE][ERROR] {}", err);
                                 send(
                                     &distributor,
-                                    EventType::Bridge(BridgeEvents::StateUpdate {
+                                    EventType::StateUpdate(StateWrapper {
                                         state: BridgeState::ERRORED,
                                         description: api_manager::models::StateDescription::Error {
                                             message: err.to_string(),
                                         },
                                     }),
-                                )
-                            } else {
-                                println!("[BRIDGE][SEND] {}", message);
-                                send(
-                                    &distributor,
-                                    EventType::Websocket(WebsocketEvents::TerminalSend {
-                                        message,
-                                        id,
-                                    }),
                                 );
+                            } else {
+                                println!("[BRIDGE][SEND] {}", message.content.trim());
                             }
                         }
-                        EventType::Bridge(BridgeEvents::PrintEnd) => {
+                        EventType::PrintEnd => {
                             if state_info.lock().await.state.ne(&BridgeState::PRINTING) {
                                 return ();
                             }
@@ -601,13 +557,14 @@ impl Bridge {
                             *print_info.lock().await = None;
                             send(
                                 &distributor,
-                                EventType::Bridge(BridgeEvents::StateUpdate {
+                                EventType::StateUpdate(StateWrapper {
                                     state: BridgeState::CONNECTED,
                                     description: api_manager::models::StateDescription::None,
                                 }),
                             );
                         }
-                        EventType::Bridge(BridgeEvents::PrintStart { info }) => {
+
+                        EventType::PrintStart(info) => {
                             if state_info.lock().await.state.ne(&BridgeState::CONNECTED) {
                                 return ();
                             }
@@ -618,9 +575,10 @@ impl Bridge {
                             let end = info.end.clone();
 
                             *guard = Some(info);
+
                             send(
                                 &distributor,
-                                EventType::Bridge(BridgeEvents::StateUpdate {
+                                EventType::StateUpdate(StateWrapper {
                                     state: BridgeState::PRINTING,
                                     description: api_manager::models::StateDescription::Print {
                                         filename,
@@ -632,17 +590,14 @@ impl Bridge {
                             );
                             send(
                                 &distributor,
-                                EventType::Bridge(BridgeEvents::TerminalSend {
-                                    message: "M110 N0".to_string(),
-                                    id: Uuid::new_v4(),
-                                }),
+                                EventType::OutGoingTerminalMessage(Message::new(
+                                    "M110 N0".to_string(),
+                                    Uuid::new_v4(),
+                                )),
                             );
                         }
-                        EventType::Bridge(BridgeEvents::StateUpdate {
-                            state,
-                            description: _,
-                        }) if state == BridgeState::CONNECTED => {
-                            *ready.lock().await = true;
+                        EventType::StateUpdate(_state_info) => {
+                            println!("Received state update event on bridge thread")
                         }
                         _ => (),
                     }
