@@ -270,7 +270,14 @@ async fn handle_route(
         if !permissions.file_edit() || !permissions.file_access() {
             return unauthorized_response();
         }
-        return routes::upload_file::handler(&mut request).await;
+        return routes::upload_file::handler(&mut request, state).await;
+    }
+
+    if request.method().eq(&Method::POST) && path.eq(routes::rename_file::PATH) {
+        if !permissions.file_edit() || !permissions.file_access() {
+            return unauthorized_response();
+        }
+        return routes::rename_file::handler(request, state).await;
     }
 
     if request.method().eq(&Method::PUT) && path.eq(routes::create_connection::PATH) {
@@ -414,6 +421,18 @@ fn handle_option_requests(request: &Request<Body>) -> Response<Body> {
             )
             .body(Body::empty())
             .expect("Couldn't create a valid response");
+    }
+
+    if path == routes::rename_file::PATH {
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "text/plain")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                routes::rename_file::METHODS,
+            )
+            .body(Body::empty())
+            .expect("Failed to construct valid response");
     }
 
     if path == routes::create_connection::PATH {
