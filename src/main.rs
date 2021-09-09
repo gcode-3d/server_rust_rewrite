@@ -252,7 +252,6 @@ impl Manager {
                                 ]
                         });
                         send(&bridge_sender, EventType::OutGoingTerminalMessage(message.clone()));
-                        println!("[SENDING TO WS]");
 
                         for sender in self.websockets.lock().await.iter_mut() {
                             sender
