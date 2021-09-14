@@ -1,6 +1,8 @@
 /*
     Upload a .gcode file to the files directory.
 
+    ! Cannot upload a file that is currently printing.
+
     POST /api/files
     multipart/form-data
 
@@ -13,21 +15,36 @@ use std::{
     fs::{self, File},
     io::Write,
     path::Path,
+    sync::Arc,
     usize,
 };
 
 use futures::StreamExt;
 use hyper::{header, Body, Request, Response, StatusCode};
 use regex::Regex;
+use tokio::sync::Mutex;
 
-use crate::api_manager::responses::{
-    self, bad_request_response, server_error_response, too_large_response,
+use crate::api_manager::{
+    models::{StateDescription, StateWrapper},
+    responses::{
+        self, bad_request_response, forbidden_response, server_error_response, too_large_response,
+    },
 };
+use lazy_static::lazy_static;
 
 pub const METHODS: &str = "GET, POST";
 pub const PATH: &str = "/api/files";
 
-pub async fn handler(req: &mut Request<Body>) -> Response<Body> {
+lazy_static! {
+    static ref NAME_REGEX: Regex =
+        Regex::new(r#"Content-Disposition: form-data; name="file"; filename="([^\\/.]*\.gcode)""#,)
+            .unwrap();
+}
+
+pub async fn handler(
+    req: &mut Request<Body>,
+    state_info: Arc<Mutex<StateWrapper>>,
+) -> Response<Body> {
     if !req.headers().contains_key("content-type") {
         return bad_request_response();
     }
@@ -82,19 +99,30 @@ pub async fn handler(req: &mut Request<Body>) -> Response<Body> {
             Ok(mut data) => {
                 let regex = Regex::new(r"\r\n?|\n").unwrap();
                 data = regex.replace_all(&data, "\n").to_string();
-                let name_regex = Regex::new(
-                    r#"Content-Disposition: form-data; name="file"; filename="([^\\]*\.gcode)""#,
-                )
-                .unwrap();
+
                 if data.starts_with(&format!("--{}", boundary)) && data.contains("\n\n") {
                     let header = data.split("\n\n").next().unwrap();
-                    let captures = name_regex.captures(header);
+                    let captures = NAME_REGEX.captures(header);
                     if captures.is_some() {
                         let capture = captures.unwrap().get(1);
                         if capture.is_some() {
-                            match File::create(
-                                Path::new("./files/").join(capture.unwrap().as_str()),
-                            ) {
+                            let name = capture.unwrap().as_str();
+                            let state = state_info.lock().await;
+                            match &state.description {
+                                StateDescription::Print {
+                                    filename,
+                                    progress: _,
+                                    start: _,
+                                    end: _,
+                                } => {
+                                    if filename == name {
+                                        return forbidden_response();
+                                    }
+                                }
+                                _ => (),
+                            }
+
+                            match File::create(Path::new("./files/").join(name)) {
                                 Ok(created_file) => {
                                     file = Some(created_file);
                                     is_capturing = true;

@@ -218,18 +218,14 @@ pub async fn send_to_all_ws_clients(
     message: String,
     sockets: &Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
 ) {
-    print!("x1");
     let mut delete_queue: Vec<u128> = vec![];
     {
         if sockets.lock().await.len() == 0 {
-            print!("x2");
             return;
         }
     }
     {
-        print!("x3");
         for socket in sockets.lock().await.iter_mut() {
-            print!("x4");
             let id = socket.0;
             let socket = socket.1;
 
@@ -245,13 +241,9 @@ pub async fn send_to_all_ws_clients(
             }
         }
     }
-    print!("x5");
 
     if delete_queue.len() > 0 {
-        print!("x6");
-
         for socket in delete_queue {
-            print!("x7");
             sockets.lock().await.remove(&socket);
         }
     }
