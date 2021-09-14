@@ -8,7 +8,10 @@ use uuid::Uuid;
 use crate::parser::TempInfo;
 
 pub fn send(sender: &Sender<EventType>, data: EventType) {
-    sender.send(data).expect("Cannot send message")
+    let result = sender.send(data);
+    if result.is_err() {
+        eprintln!("[ERROR] {}", result.unwrap_err());
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -251,6 +254,48 @@ pub enum EventType {
     },
     IncomingTerminalMessage(String),
     OutGoingTerminalMessage(Message),
+}
+
+impl std::fmt::Display for EventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventType::StateUpdate(StateWrapper {
+                state,
+                description: _,
+            }) => {
+                write!(f, "Stateupdate event - {:?}", state)
+            }
+
+            EventType::CreateBridge { address, port } => {
+                write!(f, "Create bridge event: {}:{}", address, port)
+            }
+            EventType::CreateBridgeError { error } => {
+                write!(f, "Create bridge error event: {}", error)
+            }
+            EventType::KillBridge => {
+                write!(f, "Kill bridge event")
+            }
+            EventType::PrintEnd => {
+                write!(f, "End print event")
+            }
+            EventType::PrintStart(info) => {
+                write!(f, "Start print event {}", info.filename)
+            }
+            EventType::TempUpdate {
+                tools: _,
+                bed: _,
+                chamber: _,
+            } => {
+                write!(f, "Temp update event ")
+            }
+            EventType::IncomingTerminalMessage(message) => {
+                write!(f, "Incoming terminal message event | {}", message)
+            }
+            EventType::OutGoingTerminalMessage(message) => {
+                write!(f, "Outgoing terminal message event | {:?}", message)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

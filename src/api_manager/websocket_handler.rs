@@ -154,34 +154,37 @@ pub async fn check_incoming_messages(
     sockets: Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
 ) {
     let mut delete_queue: Vec<u128> = vec![];
-    for socket in sockets.lock().await.iter_mut() {
-        let id = socket.0;
-        let socket = socket.1;
-        if let Some(result) = socket.next().now_or_never() {
-            if result.is_none() {
-                yield_now().await;
-                continue;
-            }
-            let result = result.unwrap();
-
-            match result {
-                Ok(message) => {
-                    if message.is_close() {
-                        delete_queue.push(id.clone());
-                        continue;
-                    }
-                    if message.is_ping() {
-                        socket
-                            .send(Message::Pong(message.into_data()))
-                            .await
-                            .expect("Cannot send message");
-                        continue;
-                    }
-
-                    close_socket(id, socket, CloseCode::Unsupported).await;
+    {
+        for socket in sockets.lock().await.iter_mut() {
+            let id = socket.0;
+            let socket = socket.1;
+            if let Some(result) = socket.next().now_or_never() {
+                if result.is_none() {
+                    yield_now().await;
+                    continue;
                 }
-                Err(_) => {
-                    delete_queue.push(id.clone());
+                let result = result.unwrap();
+
+                match result {
+                    Ok(message) => {
+                        if message.is_close() {
+                            delete_queue.push(id.clone());
+                            continue;
+                        }
+                        if message.is_ping() {
+                            socket
+                                .send(Message::Pong(message.into_data()))
+                                .await
+                                .expect("Cannot send message");
+                            continue;
+                        }
+
+                        close_socket(id, socket, CloseCode::Unsupported).await;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR][WS] {}", e);
+                        delete_queue.push(id.clone());
+                    }
                 }
             }
         }
@@ -209,4 +212,47 @@ async fn close_socket(id: &u128, socket: &mut WebSocketStream<Upgraded>, close_c
             reason: std::borrow::Cow::Borrowed(""),
         })))
         .await;
+}
+
+pub async fn send_to_all_ws_clients(
+    message: String,
+    sockets: &Arc<Mutex<HashMap<u128, WebSocketStream<Upgraded>>>>,
+) {
+    print!("x1");
+    let mut delete_queue: Vec<u128> = vec![];
+    {
+        if sockets.lock().await.len() == 0 {
+            print!("x2");
+            return;
+        }
+    }
+    {
+        print!("x3");
+        for socket in sockets.lock().await.iter_mut() {
+            print!("x4");
+            let id = socket.0;
+            let socket = socket.1;
+
+            let result = socket.send(Message::Text(message.clone())).await;
+
+            if result.is_err() {
+                eprintln!(
+                    "[WS][ERROR] ID: {} | {}",
+                    Uuid::from_u128(*id).to_hyphenated(),
+                    result.unwrap_err()
+                );
+                delete_queue.push(*id);
+            }
+        }
+    }
+    print!("x5");
+
+    if delete_queue.len() > 0 {
+        print!("x6");
+
+        for socket in delete_queue {
+            print!("x7");
+            sockets.lock().await.remove(&socket);
+        }
+    }
 }
