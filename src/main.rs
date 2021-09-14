@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use crate::api_manager::models::{send, EventType, StateWrapper, BridgeState};
+use crate::api_manager::{models::{send, EventType, StateWrapper, BridgeState}, websocket_handler::send_to_all_ws_clients};
 use api_manager::{
     models::{SettingRow, StateDescription},
     ApiManager,
@@ -8,10 +8,9 @@ use api_manager::{
 
 use bridge::Bridge;
 use chrono::{DateTime, Utc};
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use futures::SinkExt;
+use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use hyper::upgrade::Upgraded;
-use hyper_tungstenite::{tungstenite::Message, WebSocketStream};
+use hyper_tungstenite::WebSocketStream;
 use serde_json::json;
 use sqlx::{Connection, Executor, SqliteConnection};
 use tokio::{
@@ -21,7 +20,6 @@ use tokio::{
     task::{yield_now, JoinHandle},
     time::{sleep, Instant},
 };
-use uuid::Uuid;
 mod api_manager;
 mod bridge;
 mod client_update_check;
@@ -72,13 +70,47 @@ impl Manager {
         let (bridge_sender, bridge_receiver) = unbounded();
         let websockets = self.websockets.clone();
         let stateinfo = self.state.clone();
+        let panic_sender_clone = self.sender.clone();
         spawn(async move {
+            std::panic::set_hook(Box::new(move |e| {
+                println!("[API][PANIC] {}", e);
+                let msg = format!("{}", e);
+                sentry::capture_message(&msg, sentry::Level::Error);
+
+                send(
+                    &panic_sender_clone,
+                    EventType::StateUpdate(StateWrapper {
+                        state: BridgeState::ERRORED,
+                        description: StateDescription::Error {
+                            message: "An internal error occurred\nCheck the logs for more info."
+                                .to_string(),
+                        },
+                    }),
+                );
+            }));
             let _ = spawn(ApiManager::start(dist_sender_clone, websockets, stateinfo));
         });
         self.connect_boot(self.sender.clone(), self.state.clone())
             .await;
         let websockets = self.websockets.clone();
+        let panic_sender_clone = self.sender.clone();
         spawn(async move {
+            std::panic::set_hook(Box::new(move |e| {
+                println!("[WS][PANIC] {}", e);
+                let msg = format!("{}", e);
+                sentry::capture_message(&msg, sentry::Level::Error);
+
+                send(
+                    &panic_sender_clone,
+                    EventType::StateUpdate(StateWrapper {
+                        state: BridgeState::ERRORED,
+                        description: StateDescription::Error {
+                            message: "An internal error occurred\nCheck the logs for more info."
+                                .to_string(),
+                        },
+                    }),
+                );
+            }));
             loop {
                 api_manager::websocket_handler::check_incoming_messages(websockets.clone())
                     .await;
@@ -86,203 +118,182 @@ impl Manager {
             }
         });
         loop {
-            if let Ok(event) = self.receiver.try_recv() {
-                match event {
-                    EventType::CreateBridge { address, port } => {
-                        println!(
-                            "[MAIN] Creating new bridge instance: {}:{}",
-                            &address, &port
-                        );
-                        if self.bridge_thread.is_some() {
-                            send(&self.sender, EventType::CreateBridgeError {
-                            error: "Tried to create a new connection while already connected. Aborted all connections".to_string(),
-                    });
-
-                            continue;
-                        }
-
-                        let dist_sender_clone = self.sender.clone();
-                        let bridge_receiver_clone = bridge_receiver.clone();
-                        let bridge_sender_clone = bridge_sender.clone();
-                        let state = self.state.clone();
-                        self.bridge_thread = Some(spawn(async move {
-                            let panic_sender_clone = dist_sender_clone.clone();
-                            std::panic::set_hook(Box::new(move |e| {
-                                println!("[BRIDGE][PANIC] {}", e);
-                                let msg = format!("{}", e);
-                                sentry::capture_message(&msg, sentry::Level::Error);
-                                send(&panic_sender_clone, EventType::StateUpdate ( 
-                                    StateWrapper {
-                                    state: BridgeState::ERRORED,
-                                    description: StateDescription::Error {
-                                        message: "An internal error occurred\nCheck the logs for more info.".to_string()
-                                    }
-                                })
+            match self.receiver.try_recv() {
+                Ok(event) => {
+                    println!("[EVENT] {}", event);
+                    match event {
+                        EventType::CreateBridge { address, port } => {
+                            println!(
+                                "[MAIN] Creating new bridge instance: {}:{}",
+                                &address, &port
                             );
-                        }));
-                            let mut bridge = Bridge::new(
-                                dist_sender_clone,
-                                bridge_sender_clone,
-                                bridge_receiver_clone,
-                                address,
-                                port,
-                                state,
-                            );
-                            bridge.start().await;
-                        }));
-                    }
-                    EventType::CreateBridgeError { error } => {
-                        eprintln!("[BRIDGE][Error]: {} ", error);
-                        send(&bridge_sender, EventType::KillBridge);
-                        send(
-                            &self.sender,
-                            EventType::StateUpdate(StateWrapper {
-                                state: BridgeState::ERRORED,
-                                description: api_manager::models::StateDescription::Error {
-                                    message: error,
-                                },
-                            }),
-                        );
-
-                        if let Some(handle) = &self.bridge_thread {
-                            handle.abort();
-                            self.bridge_thread = None;
-                        } else {
-                            panic!("Connection error when thread was already closed.");
-                            // continue
+                            if self.bridge_thread.is_some() {
+                                send(&self.sender, EventType::CreateBridgeError {
+                                error: "Tried to create a new connection while already connected. Aborted all connections".to_string(),
+                        });
+    
+                                continue;
+                            }
+    
+                            let dist_sender_clone = self.sender.clone();
+                            let bridge_receiver_clone = bridge_receiver.clone();
+                            let bridge_sender_clone = bridge_sender.clone();
+                            let state = self.state.clone();
+                            self.bridge_thread = Some(spawn(async move {
+                                let panic_sender_clone = dist_sender_clone.clone();
+                                std::panic::set_hook(Box::new(move |e| {
+                                    println!("[BRIDGE][PANIC] {}", e);
+                                    let msg = format!("{}", e);
+                                    sentry::capture_message(&msg, sentry::Level::Error);
+                                    send(&panic_sender_clone, EventType::StateUpdate ( 
+                                        StateWrapper {
+                                        state: BridgeState::ERRORED,
+                                        description: StateDescription::Error {
+                                            message: "An internal error occurred\nCheck the logs for more info.".to_string()
+                                        }
+                                    })
+                                );
+                            }));
+                                let mut bridge = Bridge::new(
+                                    dist_sender_clone,
+                                    bridge_sender_clone,
+                                    bridge_receiver_clone,
+                                    address,
+                                    port,
+                                    state,
+                                );
+                                bridge.start().await;
+                            }));
                         }
-                    }
-                    EventType::StateUpdate(new_state) => {
-                        {
-                            let old = self.state.lock().await;
-                            println!("[STATEUPDATE] {:?} => {:?}", old.state, new_state.state);
-                        }
-                        *self.state.lock().await = new_state.clone();
-                        self.send_websockets_updated_state(new_state.clone()).await;
-                        if new_state.state == BridgeState::DISCONNECTED
-                            || new_state.state == BridgeState::ERRORED
-                        {
+                        EventType::CreateBridgeError { error } => {
+                            eprintln!("[BRIDGE][Error]: {} ", error);
                             send(&bridge_sender, EventType::KillBridge);
-                            self.bridge_thread.take();
+                            send(
+                                &self.sender,
+                                EventType::StateUpdate(StateWrapper {
+                                    state: BridgeState::ERRORED,
+                                    description: api_manager::models::StateDescription::Error {
+                                        message: error,
+                                    },
+                                }),
+                            );
+    
+                            if let Some(handle) = &self.bridge_thread {
+                                handle.abort();
+                                self.bridge_thread = None;
+                            } else {
+                                panic!("Connection error when thread was already closed.");
+                                // continue
+                            }
                         }
-                    }
-
-                    EventType::PrintEnd => send(
-                        &bridge_sender,
-                        EventType::PrintEnd,
-                    ),
-                    EventType::PrintStart(info) => {
-                        if self.bridge_thread.is_none() {
-                            continue;
+                        EventType::StateUpdate(new_state) => {
+                            {
+                                let old = self.state.lock().await;
+                                println!("[STATEUPDATE] {:?} => {:?}", old.state, new_state.state);
+                            }
+                            *self.state.lock().await = new_state.clone();
+                            self.send_websockets_updated_state(new_state.clone()).await;
+                            if new_state.state == BridgeState::DISCONNECTED
+                                || new_state.state == BridgeState::ERRORED
+                            {
+                                send(&bridge_sender, EventType::KillBridge);
+                                self.bridge_thread.take();
+                            }
                         }
-                        send(
+    
+                        EventType::PrintEnd => send(
                             &bridge_sender,
-                            EventType::PrintStart (info),
-                        );
-                    }
-                    EventType::TempUpdate {
-                        tools,
-                        bed,
-                        chamber,
-                    } => {
-                        let json = json!({
-                                "type": "temperature_change",
-                                "content": {
-                                        "tools": tools,
-                                        "bed": bed,
-                                        "chamber": chamber,
-                                        "time": Utc::now().timestamp_millis()
-                                },
-                        });
-                        let mut delete_queue: Vec<u128> = vec![];
-                        for sender in self.websockets.lock().await.iter_mut() {
-                            let result = sender.1.send(Message::text(json.to_string())).await;
-
-                            if result.is_err() {
-                                println!(
-                                    "[WS][ERROR] ID: {} | {}",
-                                    Uuid::from_u128(sender.0.clone()).to_hyphenated(),
-                                    result.unwrap_err()
-                                );
-                                delete_queue.push(sender.0.clone());
+                            EventType::PrintEnd,
+                        ),
+                        EventType::PrintStart(info) => {
+                            if self.bridge_thread.is_none() {
+                                continue;
                             }
+                            send(
+                                &bridge_sender,
+                                EventType::PrintStart (info),
+                            );
                         }
-                        for id in delete_queue {
-                            let mut guard = self.websockets.lock().await;
-                            guard.remove(&id);
+                        EventType::TempUpdate {
+                            tools,
+                            bed,
+                            chamber,
+                        } => {
+                            let json = json!({
+                                    "type": "temperature_change",
+                                    "content": {
+                                            "tools": tools,
+                                            "bed": bed,
+                                            "chamber": chamber,
+                                            "time": Utc::now().timestamp_millis()
+                                    },
+                            });
+    
+                            send_to_all_ws_clients(json.to_string(), &self.websockets).await;
+                           
+                        }
+    
+                        EventType::IncomingTerminalMessage(message) => {
+                            let time: DateTime<Utc> = Utc::now();
+                            let json = json!({
+                                    "type": "terminal_message",
+                                    "content": [
+                                            {
+                                                    "message": message,
+                                                    "type": "OUTPUT",
+                                                    "id": null,
+                                                    "time": time.to_rfc3339()
+                                            }
+                                    ]
+                            });
+                            send_to_all_ws_clients(json.to_string(), &self.websockets).await;
+                        }
+    
+                        EventType::OutGoingTerminalMessage(message) => {
+                            let time: DateTime<Utc> = Utc::now();
+                            let json = json!({
+                                    "type": "terminal_message",
+                                    "content": [
+                                            {
+                                                    "message": message.content.trim(),
+                                                    "type": "INPUT",
+                                                    "id": message.id.to_hyphenated().to_string(),
+                                                    "time": time.to_rfc3339()
+                                            }
+                                    ]
+                            });
+                            send(&bridge_sender, EventType::OutGoingTerminalMessage(message.clone()));
+    
+                            send_to_all_ws_clients(json.to_string(), &self.websockets).await;
+                            
+                        }
+    
+                        EventType::KillBridge => {
+                            eprintln!("[WARNING] Received KillBridge event on main receiver");
                         }
                     }
-
-                    EventType::IncomingTerminalMessage(message) => {
-                        let time: DateTime<Utc> = Utc::now();
-                        let json = json!({
-                                "type": "terminal_message",
-                                "content": [
-                                        {
-                                                "message": message,
-                                                "type": "OUTPUT",
-                                                "id": null,
-                                                "time": time.to_rfc3339()
-                                        }
-                                ]
-                        });
-                        for sender in self.websockets.lock().await.iter_mut() {
-                            let result = sender.1.send(Message::text(json.to_string())).await;
-                            if result.is_err() {
-                                println!(
-                                    "[WS] Connection closed: {}",
-                                    Uuid::from_u128(sender.0.clone()).to_hyphenated()
-                                );
-                                self.websockets.lock().await.remove(sender.0);
-                            }
+                },
+                Err(error) => {
+                    if error != TryRecvError::Empty {
+                        eprintln!("[ERROR][EVENT] {}", error);
                         }
-                    }
-
-                    EventType::OutGoingTerminalMessage(message) => {
-                        let time: DateTime<Utc> = Utc::now();
-                        let json = json!({
-                                "type": "terminal_message",
-                                "content": [
-                                        {
-                                                "message": message.content.trim(),
-                                                "type": "INPUT",
-                                                "id": message.id.to_hyphenated().to_string(),
-                                                "time": time.to_rfc3339()
-                                        }
-                                ]
-                        });
-                        send(&bridge_sender, EventType::OutGoingTerminalMessage(message.clone()));
-
-                        for sender in self.websockets.lock().await.iter_mut() {
-                            sender
-                                .1
-                                .send(Message::text(json.to_string()))
-                                .await
-                                .expect("Cannot send message");
+                        let time = Instant::now();
+                        yield_now().await;
+                        let state = self.state.lock().await.state;
+                        if state.ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 300 {
+                            sleep(tokio::time::Duration::from_millis(
+                                300 - time.elapsed().as_millis() as u64,
+                            ))
+                            .await;
+                        } else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 3 {
+                            sleep(tokio::time::Duration::from_millis(
+                                3 - time.elapsed().as_millis() as u64,
+                            ))
+                            .await;
                         }
-                        
-                    }
-
-                    EventType::KillBridge => {
-                        eprintln!("[WARNING] Received KillBridge event on main receiver");
-                    }
-                }
-            } else {
-                let time = Instant::now();
-                yield_now().await;
-                let state = self.state.lock().await.state;
-                if state.ne(&BridgeState::PRINTING) && time.elapsed().as_millis() < 300 {
-                    sleep(tokio::time::Duration::from_millis(
-                        300 - time.elapsed().as_millis() as u64,
-                    ))
-                    .await;
-                } else if state.eq(&BridgeState::PRINTING) && time.elapsed().as_millis() < 3 {
-                    sleep(tokio::time::Duration::from_millis(
-                        3 - time.elapsed().as_millis() as u64,
-                    ))
-                    .await;
-                }
+                },
             }
+            
         }
     }
     /*
@@ -420,13 +431,7 @@ impl Manager {
             },
             BridgeState::FINISHING => todo!(),
         };
-        for sender in self.websockets.lock().await.iter_mut() {
-            sender
-                .1
-                .send(Message::text(json.to_string()))
-                .await
-                .expect("Cannot send message");
-        }
+        send_to_all_ws_clients(json.to_string(), &self.websockets).await;
     }
 }
 
