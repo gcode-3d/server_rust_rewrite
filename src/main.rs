@@ -120,7 +120,6 @@ impl Manager {
         loop {
             match self.receiver.try_recv() {
                 Ok(event) => {
-                    println!("[EVENT] {}", event);
                     match event {
                         EventType::CreateBridge { address, port } => {
                             println!(

@@ -152,56 +152,34 @@ impl Bridge {
                     }
                     let print_info = guard.as_mut().unwrap();
                     let line;
-                    println!(
-                        "[ACTION] {} | {:?} | {}",
-                        action,
-                        line_number,
-                        print_info.line_number()
-                    );
                     if line_number.is_some() {
-                        print!("1");
                         let line_number = line_number.unwrap();
                         line = print_info.get_line_by_index(line_number + 1);
                         print_info.set_line_number(line_number);
                     } else if print_info.line_number() == 0 {
-                        print!("2");
-
                         line = print_info.get_line_by_index(1);
                         print_info.set_line_number(1);
                     } else {
-                        print!("3");
-
-                        println!("[!!!] SKIPPED LINE??");
                         // skip line as it's probably just some unrelated echo without line nr.
                         return;
                     }
-                    print!("4");
 
                     if line.is_none() {
-                        print!("5");
-
-                        println!("print end!?");
                         send(distributor, EventType::PrintEnd);
 
                         return;
                     }
-                    print!("6");
 
                     let line = line.unwrap();
                     let prev_progress = format!("{:.1}", print_info.progress());
-                    print!("7");
 
                     print_info.add_bytes_sent(line.content().len() as u64);
                     let difference = format!("{:.1}", print_info.progress())
                         .parse::<f64>()
                         .unwrap()
                         - prev_progress.parse::<f64>().unwrap();
-                    print!("8");
 
                     if difference > 0.1 {
-                        print!("9");
-
-                        println!("[DIFF] Difference bigger than 0.1, sending..");
                         send(
                             &distributor,
                             EventType::StateUpdate(StateWrapper {
@@ -215,7 +193,6 @@ impl Bridge {
                             }),
                         );
                     }
-                    print!("10");
 
                     send(
                         &distributor,
@@ -224,7 +201,6 @@ impl Bridge {
                             Uuid::new_v4(),
                         )),
                     );
-                    print!("11");
                     return;
                 } else if state.eq(&BridgeState::CONNECTED) {
                     let message = queue.lock().await.pop_front();
@@ -457,7 +433,6 @@ impl Bridge {
                                 }
 
                                 if collected.starts_with("ok") {
-                                    println!("[OK] Starting ok check");
                                     Bridge::handle_ok_response(
                                         &cloned_dist,
                                         &bridge_sender,
@@ -469,7 +444,6 @@ impl Bridge {
                                         &ready,
                                     )
                                     .await;
-                                    println!("[OK] Ending ok check");
                                 }
                             }
                             collected = String::new();
